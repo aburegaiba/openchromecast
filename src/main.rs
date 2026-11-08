@@ -10,6 +10,7 @@
 
 mod config;
 mod crypto;
+mod device_id;
 mod mdns;
 mod media;
 mod player;
@@ -120,12 +121,7 @@ fn log_file() -> Option<std::fs::File> {
 /// The core receiver: identity, mDNS, player backend, TLS listener. Runs until
 /// the listener ends, Ctrl-C, or the tray requests shutdown.
 pub(crate) async fn run_receiver(cli: config::Cli, shutdown: Arc<Notify>) -> Result<()> {
-    let device_id = match &cli.device_id {
-        Some(d) => d.clone(),
-        // Full 128-bit UUID (32 hex chars): pychromecast explicitly ignores
-        // devices whose `id` TXT is not a parseable UUID.
-        None => uuid::Uuid::new_v4().simple().to_string(),
-    };
+    let device_id = device_id::resolve(cli.device_id.as_deref())?;
 
     // What a Cast picker will show. The computer's own name unless the run said otherwise.
     let friendly_name = cli.friendly_name.clone().unwrap_or_else(computer_name);

@@ -20,7 +20,7 @@ pub struct Cli {
     #[arg(long, default_value = "Chromecast Ultra")]
     pub model: String,
 
-    /// Device id advertised in mDNS (`id` record, full 128-bit UUID, 32 hex chars). Random if omitted.
+    /// Override the persistent device id advertised in mDNS (`id`, 32 hex chars).
     #[arg(long)]
     pub device_id: Option<String>,
 

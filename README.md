@@ -159,7 +159,7 @@ Common options:
 |-------------------|-----------------------------------------------------|
 | `--friendly-name` | name shown in the cast picker (mDNS `fn`)           |
 | `--model`         | advertised model, e.g. `Chromecast Ultra` (mDNS `md`) |
-| `--device-id`     | advertised device id (mDNS `id`, full 128-bit UUID) |
+| `--device-id`     | override the persistent advertised device id (mDNS `id`, full 128-bit UUID) |
 | `--port`          | Cast V2 TLS port (default 8009)                     |
 | `--player`        | `mpv` (default), `vlc`, or `none`                   |
 | `--mpv <path>` / `--vlc <path>` | player executable (auto-detected) |
@@ -168,6 +168,29 @@ Common options:
 | `-v` / `-vv`      | more logging                                        |
 
 `RUST_LOG=debug openchromecast` also enables verbose logging.
+
+## Persistent receiver identity
+
+Without `--device-id`, the first start creates a random UUID and saves it for
+later starts. Cast senders and Home Assistant can therefore recognize the same
+receiver after an application restart, even if its friendly name changes.
+
+The per-user identity file is:
+
+| Platform | Location |
+|---|---|
+| Linux | `$XDG_CONFIG_HOME/openchromecast/device-id`, or `$HOME/.config/openchromecast/device-id` |
+| macOS | `$HOME/Library/Application Support/openchromecast/device-id` |
+| Windows | `%LOCALAPPDATA%\openchromecast\device-id` |
+
+An explicit `--device-id` takes precedence and does not read or write that file.
+If the stored ID is invalid or storage is unavailable, startup reports an error
+instead of silently switching to a new identity. Existing IDs are never replaced.
+The first start after upgrading from random IDs establishes a new persistent ID;
+to retain an earlier known ID, continue supplying it with `--device-id`.
+
+This UUID is only the discovery identity. It is not a Google device certificate
+or signing key and does not change the authentication requirements above.
 
 ## System tray
 
