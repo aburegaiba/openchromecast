@@ -9,6 +9,7 @@ discovery. This is a prototype, not a Google-certified Chromecast.
 - Default Media Receiver (`CC1AD845`), HTTP/HTTPS media, play/pause/seek/stop,
   software volume/mute, and status from the real player.
 - Audio stays in a foreground service while another app remains visible.
+- The return button supports Home Assistant's regular and Minimal packages.
 - Video opens from the receiver screen or its notification. No overlay,
   accessibility, microphone, storage, root or Google account permission.
 - Stable discovery UUID in app-private preferences, no shared device identity.
@@ -64,3 +65,17 @@ Review the APK signing certificate with the SDK's `apksigner` before applying.
 5. Stop from the UI or notification. Service destruction withdraws discovery,
    releases player/network resources and stops Rust. Restart the previous
    receiver if it had been stopped. Do not uninstall or clear data implicitly.
+
+### Android 11 hardware check
+
+The 0.1.1 prototype has been installed on ARMv7 Android 11. Its UI and native
+library loaded, and the return button opened the installed Companion Minimal
+package. A compatible Cast client prepared a 10-second synthetic WAV, played,
+paused, sought, resumed and stopped it. The owner confirmed the short tones at
+50 percent software volume with Companion in the foreground. This is an audio
+acceptance result, not a Google SDK, phone-video, DRM or multiroom certification.
+
+Android NSD currently announces the device's IPv6 addresses as well as IPv4,
+while the native listener is IPv4-only. IPv6 connections remain unqualified and
+must be addressed before claiming reliable discovery across all senders. Do not
+enable additional globally reachable listeners or change firewall rules silently.

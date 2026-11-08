@@ -62,6 +62,8 @@ public final class MainActivity extends AppCompatActivity {
         MaterialButton home = button("Home Assistant", android.R.drawable.ic_menu_revert);
         home.setOnClickListener(view -> {
             Intent companion = getPackageManager().getLaunchIntentForPackage("io.homeassistant.companion.android");
+            if (companion == null)
+                companion = getPackageManager().getLaunchIntentForPackage("io.homeassistant.companion.android.minimal");
             if (companion != null) startActivity(companion); else finish();
         });
         panel.addView(home, spaced());
