@@ -41,7 +41,7 @@ pub async fn handle(
             let app_ids = app_ids_from(&payload);
             let availability: Value = app_ids
                 .iter()
-                .map(|a| (a.as_str(), "APP_AVAILABLE"))
+                .map(|a| (a.as_str(), if supports_app(a, cfg!(target_os = "android")) { "APP_AVAILABLE" } else { "APP_UNAVAILABLE" }))
                 .collect();
             info!("app availability requested: {app_ids:?}");
             send_json(
@@ -59,6 +59,11 @@ pub async fn handle(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            if !supports_app(&app_id, cfg!(target_os = "android")) {
+                send_json(tx, "receiver-0", &msg.source_id, NS_RECEIVER,
+                    &json!({"type":"LAUNCH_ERROR", "requestId":rid, "reason":"NOT_FOUND"})).await?;
+                return Ok(());
+            }
             let session = {
                 let mut st = shared.state.lock().await;
                 st.media_session_counter += 1;
@@ -130,6 +135,11 @@ pub async fn handle(
 }
 
 /// `GET_APP_AVAILABILITY` may carry `appId` (string) or `appIds` (array).
+fn supports_app(app_id: &str, embedded: bool) -> bool {
+    // The Android prototype implements Default Media Receiver, not arbitrary web apps.
+    !embedded || app_id == "CC1AD845"
+}
+
 fn app_ids_from(payload: &Value) -> Vec<String> {
     if let Some(s) = payload.get("appId").and_then(|v| v.as_str()) {
         vec![s.to_string()]
@@ -198,5 +208,17 @@ fn namespaces_for(app_id: &str) -> (String, Vec<String>) {
         "YouTube" | "youtube" => ("YouTube".into(), vec![NS_MEDIA.into(), NS_YOUTUBE.into()]),
         "CC1AD845" => ("Default Media Receiver".into(), vec![NS_MEDIA.into()]),
         _ => (app_id.to_string(), vec![NS_MEDIA.into(), NS_YOUTUBE.into()]),
+    }
+}
+
+#[cfg(test)]
+mod embedded_tests {
+    use super::*;
+    #[test]
+    fn android_does_not_claim_unimplemented_web_receivers() {
+        assert!(supports_app("CC1AD845", true));
+        assert!(!supports_app("YouTube", true));
+        assert!(!supports_app("233637DE", true));
+        assert!(supports_app("historical-desktop-app", false));
     }
 }

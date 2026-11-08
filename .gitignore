@@ -1,4 +1,10 @@
 /target
+/android/.gradle/
+/android/.kotlin/
+/android/local.properties
+/android/**/build/
+/android/native/target/
+/android/app/src/main/jniLibs/
 /dist
 **/*.rs.bk
 /capture/

@@ -1,7 +1,11 @@
 //! Player abstraction: a small actor that receives playback commands and
 //! publishes a status snapshot.
 
+#[cfg(any(feature = "embedded-player", test))]
+pub mod bridge;
+#[cfg(not(target_os = "android"))]
 pub mod mpv;
+#[cfg(not(target_os = "android"))]
 pub mod vlc;
 
 use anyhow::Result;

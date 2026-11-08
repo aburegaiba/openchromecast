@@ -285,6 +285,7 @@ async fn handle_load(
 
     // The picture the sender offers, when this is the load that carries one: a sender retry burst often
     // drops `images` after the first, and the first is the one that has it.
+    #[cfg(not(target_os = "android"))]
     let cover = match media
         .get("metadata")
         .and_then(|m| m.get("images"))
@@ -295,6 +296,9 @@ async fn handle_load(
         Some(url) => crate::cover::fetch(url).await.map(|p| p.to_string_lossy().to_string()),
         None => None,
     };
+
+    #[cfg(target_os = "android")]
+    let cover = None; // Android owns media presentation; no desktop temporary-file fetch.
 
     // What the sender says the track is called. It is in `metadata.title`, and it is the name a person
     // should see - mpv would name the stream after its URL otherwise, which is how now-playing came to

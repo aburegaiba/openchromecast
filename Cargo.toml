@@ -15,6 +15,9 @@ path = "src/main.rs"
 name = "cast-sniff"
 path = "src/bin/sniff.rs"
 
+[features]
+embedded-player = []
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
