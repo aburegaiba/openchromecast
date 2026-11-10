@@ -332,5 +332,39 @@ async fn media_load_reaches_host_and_real_status_returns_to_sender() {
     .await;
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     assert!(bridge.poll().iter().any(|e| e["type"] == "pause"));
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let stopped = request(
+        &mut stream,
+        server::NS_MEDIA,
+        transport,
+        json!({"type":"STOP","requestId":5}),
+    )
+    .await;
+    assert_eq!(stopped["status"][0]["playerState"], "IDLE");
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert!(
+        bridge.poll().iter().any(|e| e["type"] == "stop"),
+        "embedded stop must not wait for the desktop VLC debounce"
+    );
+    let terminal = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let length = stream.read_u32().await.unwrap() as usize;
+            assert!(length < 1024 * 1024);
+            let mut frame = vec![0; length];
+            stream.read_exact(&mut frame).await.unwrap();
+            let envelope = CastMessage::decode(frame.as_slice()).unwrap();
+            if envelope.namespace != server::NS_MEDIA {
+                continue;
+            }
+            let value: serde_json::Value =
+                serde_json::from_str(envelope.payload_utf8.as_deref().unwrap()).unwrap();
+            if value.get("requestId").is_none() && value["status"][0]["playerState"] == "IDLE" {
+                break value;
+            }
+        }
+    })
+    .await
+    .expect("host terminal state must reach subscribed senders");
+    assert_eq!(terminal["status"][0]["idleReason"], "CANCELLED");
     task.abort();
 }

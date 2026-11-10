@@ -61,25 +61,35 @@ pub async fn handle(
             respond_media_status(tx, msg, shared, &rid, media_session_id).await
         }
         "STOP" => {
-            // VLC sends media STOP+LOAD bursts when a track starts/advances.
-            // Stopping mpv immediately aborts the just-issued loadfile opening
-            // ("Opening failed or was aborted") and kills audio. Debounce:
-            // only actually stop if no LOAD arrives shortly after.
-            let load_gen = {
-                let st = shared.state.lock().await;
-                st.media_load_generation
-            };
-            let shared2 = shared.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(800)).await;
-                let gen_now = {
-                    let st = shared2.state.lock().await;
+            #[cfg(feature = "embedded-player")]
+            {
+                shared.player.stop().await?;
+                if let Some(session) = shared.state.lock().await.session.as_mut() {
+                    session.media = None;
+                }
+            }
+            #[cfg(not(feature = "embedded-player"))]
+            {
+                // VLC sends media STOP+LOAD bursts when a track starts/advances.
+                // Stopping mpv immediately aborts the just-issued loadfile opening
+                // ("Opening failed or was aborted") and kills audio. Debounce:
+                // only actually stop if no LOAD arrives shortly after.
+                let load_gen = {
+                    let st = shared.state.lock().await;
                     st.media_load_generation
                 };
-                if gen_now == load_gen {
-                    let _ = shared2.player.stop().await;
-                }
-            });
+                let shared2 = shared.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(800)).await;
+                    let gen_now = {
+                        let st = shared2.state.lock().await;
+                        st.media_load_generation
+                    };
+                    if gen_now == load_gen {
+                        let _ = shared2.player.stop().await;
+                    }
+                });
+            }
             respond_media_status_idle(tx, msg, shared, &rid).await
         }
         "GET_STATUS" => respond_media_status(tx, msg, shared, &rid, media_session_id).await,
@@ -420,7 +430,15 @@ async fn media_status(shared: &Shared) -> Option<Value> {
     let st = shared.state.lock().await;
     let session = st.session.as_ref()?;
     let snap = shared.player.snapshot().await;
-    let state_str = player_state_cast(snap.state);
+    #[cfg(feature = "embedded-player")]
+    let stopped = session.media.is_none();
+    #[cfg(not(feature = "embedded-player"))]
+    let stopped = false;
+    let state_str = if stopped {
+        "IDLE"
+    } else {
+        player_state_cast(snap.state)
+    };
     let media = session.media.as_ref().map(|m| {
         let mut media = json!({
             "contentId": m.content_id,
@@ -437,7 +455,7 @@ async fn media_status(shared: &Shared) -> Option<Value> {
         "mediaSessionId": session.media_session_id,
         "playbackRate": 1,
         "playerState": state_str,
-        "currentTime": snap.position,
+        "currentTime": if stopped { 0.0 } else { snap.position },
         "supportedMediaCommands": SUPPORTED_MEDIA_COMMANDS,
         "volume": { "level": st.volume, "muted": st.muted },
         "media": media,
@@ -468,7 +486,9 @@ async fn media_status(shared: &Shared) -> Option<Value> {
     if let Some(ids) = &session.active_track_ids {
         status["activeTrackIds"] = json!(ids);
     }
-    if snap.state == PlayerState::Ended {
+    if stopped {
+        status["idleReason"] = json!("CANCELLED");
+    } else if snap.state == PlayerState::Ended {
         status["idleReason"] = json!("FINISHED");
     } else if snap.state == PlayerState::Idle && snap.end_error {
         // The stream died because the sender switched profiles. That is an
@@ -559,13 +579,23 @@ fn spawn_status_poller(tx: MessageSink, shared: Shared, session_id: String) {
             }
 
             let snap = shared.player.snapshot().await;
-            // Never push IDLE/Ended unsolicited. Senders like VLC read an
+            // Desktop VLC must not receive IDLE/Ended unsolicited. It reads an
             // unsolicited IDLE - with any idleReason, FINISHED included - as
             // "the load failed" while they are still buffering, and switch
             // stream configuration. They ask GET_STATUS for the rest, and a
             // message with no requestId is dropped while they wait for one.
+            #[cfg(not(feature = "embedded-player"))]
             if matches!(snap.state, PlayerState::Idle | PlayerState::Ended) {
                 continue;
+            }
+            #[cfg(feature = "embedded-player")]
+            if snap.state == PlayerState::Idle && !snap.end_error {
+                // Ignore transient idle during a LOAD, but publish an explicit host stop.
+                let stopped = shared.state.lock().await.session.as_ref()
+                    .is_some_and(|session| session.media.is_none());
+                if !stopped {
+                    continue;
+                }
             }
             let changed = snap.state != last.state
                 || (snap.position - last.position).abs() > 0.5

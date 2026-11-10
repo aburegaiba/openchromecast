@@ -72,11 +72,16 @@ pub extern "system" fn Java_org_openchromecast_receiver_NativeBridge_start(
     port: jint,
     device_id: JString,
     name: JString,
+    initial_volume: jfloat,
 ) -> jstring {
     let result = (|| -> anyhow::Result<()> {
         let device_id: String = env.get_string(&device_id)?.into();
         let name: String = env.get_string(&name)?.into();
-        start(port, device_info::DeviceInfo::new(&device_id, name)?)
+        start(
+            port,
+            device_info::DeviceInfo::new(&device_id, name)?,
+            initial_volume,
+        )
     })();
     response(
         &env,
@@ -84,8 +89,12 @@ pub extern "system" fn Java_org_openchromecast_receiver_NativeBridge_start(
     )
 }
 
-fn start(port: jint, info: device_info::DeviceInfo) -> anyhow::Result<()> {
+fn start(port: jint, info: device_info::DeviceInfo, initial_volume: f32) -> anyhow::Result<()> {
     anyhow::ensure!((1024..=65535).contains(&port), "invalid port");
+    anyhow::ensure!(
+        initial_volume.is_finite() && (0.0..=1.0).contains(&initial_volume),
+        "invalid initial volume"
+    );
     let mut guard = session().lock().unwrap_or_else(|e| e.into_inner());
     anyhow::ensure!(
         guard
@@ -114,7 +123,10 @@ fn start(port: jint, info: device_info::DeviceInfo) -> anyhow::Result<()> {
                     let identity =
                         tokio::task::spawn_blocking(crypto::Identity::generate).await??;
                     let shared = server::Shared {
-                        state: Arc::new(tokio::sync::Mutex::new(state::AppState::default())),
+                        state: Arc::new(tokio::sync::Mutex::new(state::AppState {
+                            volume: initial_volume,
+                            ..Default::default()
+                        })),
                         identity: Arc::new(identity),
                         player: worker_bridge.spawn(),
                     };
@@ -140,6 +152,21 @@ fn start(port: jint, info: device_info::DeviceInfo) -> anyhow::Result<()> {
         finished,
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_invalid_initial_volume_before_starting_a_receiver() {
+        for volume in [f32::NAN, f32::INFINITY, -0.1, 1.1] {
+            let info =
+                device_info::DeviceInfo::new("e8d8571a824a45df88929e1c220f602d", "Receiver".into())
+                    .unwrap();
+            assert!(start(8009, info, volume).is_err());
+        }
+    }
 }
 
 #[unsafe(no_mangle)]

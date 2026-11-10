@@ -104,3 +104,21 @@ event later than the first 35-second post-connection check; acceptance must wait
 for actual boot broadcast delivery rather than treating that short timeout as
 proof of a service failure. Device-auth nonce/signature still passed, while the
 self-signed chain remained untrusted by Google Cast roots.
+
+The 0.1.4 prototype was checked through Home Assistant's native Cast integration
+on the same hardware. HTTP discovery returned the persistent NSD identity;
+the initial software volume was correctly reported as 15 percent. Silent PCM
+playback advanced, and STOP remained IDLE with position zero instead of
+returning to a stale PLAYING state. The embedded STOP path no longer inherits
+the desktop VLC debounce or suppresses authoritative terminal states; desktop
+behavior is unchanged. TLS regression coverage checks that distinction.
+
+A silent H.264/MP4 test also advanced and rendered a visible test pattern when
+this application's screen was already open. STOP closed the video activity
+and returned to this application's main screen; returning to Companion was
+explicit. This does not validate automatic video takeover from background,
+phone senders or YouTube. A further real reboot preserved the discovery UUID
+and resumed the foreground receiver while Companion remained visible. Wait
+for the actual service and listeners, not just the process PID, before checking
+boot acceptance. Device-auth nonce/signature passed again, but the Google Cast
+root trust check still failed as expected for the generated self-signed identity.

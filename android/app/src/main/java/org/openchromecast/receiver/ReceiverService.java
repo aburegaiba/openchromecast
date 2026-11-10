@@ -108,7 +108,7 @@ public final class ReceiverService extends Service {
         };
         connectivity.registerDefaultNetworkCallback(networkCallback);
         try {
-            String error = NativeBridge.start(PORT, deviceId, receiverName);
+            String error = NativeBridge.start(PORT, deviceId, receiverName, volume);
             if (!error.isEmpty()) { fail(error); return; }
         } catch (LinkageError error) { fail("Bibliotheque native incompatible"); return; }
         handler.post(pump);
