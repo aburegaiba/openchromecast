@@ -13,6 +13,11 @@ discovery. This is a prototype, not a Google-certified Chromecast.
 - Video opens from the receiver screen or its notification. No overlay,
   accessibility, microphone, storage, root or Google account permission.
 - Stable discovery UUID in app-private preferences, no shared device identity.
+- Read-only device metadata on LAN TCP 8008 at `/setup/eureka_info`, sharing
+  the NSD name and UUID. Other paths return 404 and write methods return 405;
+  no setup, reboot, account or YouTube application API is exposed. This allows
+  compatible discovery clients to identify the receiver without claiming
+  Google certification. The Cast listener remains on TCP 8009.
 - Self-signed device authentication is unchanged. Google SDK applications may
   reject it even when discovery and Home Assistant control work. No YouTube,
   Netflix/DRM, screen mirroring, multiroom or universal sender support claim.

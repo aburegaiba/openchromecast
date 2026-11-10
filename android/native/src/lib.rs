@@ -1,6 +1,7 @@
 //! Android embeds the existing Cast transport and owns discovery and playback.
 #![allow(dead_code)]
 
+mod device_info;
 #[cfg(test)]
 mod protocol_tests;
 
@@ -66,18 +67,24 @@ fn response(env: &JNIEnv, text: &str) -> jstring {
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_openchromecast_receiver_NativeBridge_start(
-    env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
     port: jint,
+    device_id: JString,
+    name: JString,
 ) -> jstring {
-    let result = start(port);
+    let result = (|| -> anyhow::Result<()> {
+        let device_id: String = env.get_string(&device_id)?.into();
+        let name: String = env.get_string(&name)?.into();
+        start(port, device_info::DeviceInfo::new(&device_id, name)?)
+    })();
     response(
         &env,
         &result.err().map(|e| e.to_string()).unwrap_or_default(),
     )
 }
 
-fn start(port: jint) -> anyhow::Result<()> {
+fn start(port: jint, info: device_info::DeviceInfo) -> anyhow::Result<()> {
     anyhow::ensure!((1024..=65535).contains(&port), "invalid port");
     let mut guard = session().lock().unwrap_or_else(|e| e.into_inner());
     anyhow::ensure!(
@@ -103,6 +110,7 @@ fn start(port: jint) -> anyhow::Result<()> {
                 rt.block_on(async {
                     // Bind before announcing readiness. Port conflicts are real startup errors.
                     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port as u16)).await?;
+                    let metadata = tokio::net::TcpListener::bind(("0.0.0.0", device_info::HTTP_PORT)).await?;
                     let identity =
                         tokio::task::spawn_blocking(crypto::Identity::generate).await??;
                     let shared = server::Shared {
@@ -113,6 +121,7 @@ fn start(port: jint) -> anyhow::Result<()> {
                     worker_bridge.event(json!({"type":"ready"}))?;
                     tokio::select! {
                         result = server::run(listener, shared) => result,
+                        result = axum::serve(metadata, device_info::router(info)) => result.map_err(Into::into),
                         _ = worker_shutdown.notified() => Ok(()),
                     }
                 })

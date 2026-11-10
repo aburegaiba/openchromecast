@@ -31,6 +31,7 @@ public final class ReceiverService extends Service {
     private ConnectivityManager connectivity;
     private ConnectivityManager.NetworkCallback networkCallback;
     private MediaSession mediaSession;
+    private String deviceId, receiverName;
 
     @Override public void onCreate() {
         super.onCreate();
@@ -39,6 +40,14 @@ public final class ReceiverService extends Service {
         NotificationManager manager = getSystemService(NotificationManager.class);
         manager.createNotificationChannel(new NotificationChannel(CHANNEL, "Reception Cast", NotificationManager.IMPORTANCE_LOW));
         foreground(false);
+        SharedPreferences settings = getSharedPreferences("receiver", MODE_PRIVATE);
+        deviceId = settings.getString("device_id", null);
+        if (deviceId == null) {
+            deviceId = UUID.randomUUID().toString().replace("-", "");
+            if (!settings.edit().putString("device_id", deviceId).commit()) { fail("Identite non sauvegardee"); return; }
+        }
+        receiverName = settings.getString("name", "OpenChromecast Android");
+        if (!MediaPolicy.acceptsName(receiverName)) { fail("Nom de recepteur invalide"); return; }
         player = new ExoPlayer.Builder(this).build();
         player.setAudioAttributes(new AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
             .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true);
@@ -99,7 +108,7 @@ public final class ReceiverService extends Service {
         };
         connectivity.registerDefaultNetworkCallback(networkCallback);
         try {
-            String error = NativeBridge.start(PORT);
+            String error = NativeBridge.start(PORT, deviceId, receiverName);
             if (!error.isEmpty()) { fail(error); return; }
         } catch (LinkageError error) { fail("Bibliotheque native incompatible"); return; }
         handler.post(pump);
@@ -198,19 +207,11 @@ public final class ReceiverService extends Service {
     private void advertise() {
         if (destroying || registered || registration != null) return;
         if (connectivity.getActiveNetwork() == null) return;
-        SharedPreferences settings = getSharedPreferences("receiver", MODE_PRIVATE);
-        String id = settings.getString("device_id", null);
-        if (id == null) {
-            id = UUID.randomUUID().toString().replace("-", "");
-            if (!settings.edit().putString("device_id", id).commit()) { fail("Identite non sauvegardee"); return; }
-        }
-        String name = settings.getString("name", "OpenChromecast Android");
-        if (!MediaPolicy.acceptsName(name)) { fail("Nom de recepteur invalide"); return; }
         NsdServiceInfo info = new NsdServiceInfo();
-        info.setServiceName(name);
+        info.setServiceName(receiverName);
         info.setServiceType("_googlecast._tcp.");
         info.setPort(PORT);
-        info.setAttribute("id", id); info.setAttribute("fn", name);
+        info.setAttribute("id", deviceId); info.setAttribute("fn", receiverName);
         info.setAttribute("md", "OpenChromecast Android"); info.setAttribute("ve", "05");
         info.setAttribute("ca", "5"); info.setAttribute("st", "0");
         info.setAttribute("nf", "1"); info.setAttribute("rs", "");

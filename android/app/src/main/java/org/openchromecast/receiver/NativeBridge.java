@@ -2,7 +2,7 @@ package org.openchromecast.receiver;
 
 final class NativeBridge {
     static { System.loadLibrary("openchromecast_android"); }
-    static native String start(int port);
+    static native String start(int port, String deviceId, String name);
     static native String poll();
     static native boolean running();
     static native void stop();
