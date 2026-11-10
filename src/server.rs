@@ -275,11 +275,7 @@ async fn handle_device_auth(msg: &CastMessage, tx: &MessageSink, shared: &Shared
             response: Some(AuthResponse {
                 signature,
                 client_auth_certificate: shared.identity.auth_cert_der().to_vec(),
-                intermediate_certificate: shared
-                    .identity
-                    .intermediate_der()
-                    .map(|c| vec![c.to_vec()])
-                    .unwrap_or_default(),
+                intermediate_certificate: shared.identity.intermediate_ders().to_vec(),
                 signature_algorithm: Some(SignatureAlgorithm::RsassaPkcs1v15 as i32),
                 sender_nonce: Some(nonce.clone()),
                 hash_algorithm: Some(HashAlgorithm::Sha256 as i32),

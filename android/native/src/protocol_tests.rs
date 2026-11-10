@@ -1,7 +1,9 @@
 //! Loopback TLS tests: no LAN announcement, external media fetch or real playback.
 
 use super::*;
-use crate::proto::cast_channel::{CastMessage, PayloadType};
+use crate::proto::cast_channel::{
+    AuthChallenge, CastMessage, DeviceAuthMessage, HashAlgorithm, PayloadType, SignatureAlgorithm,
+};
 use prost::Message;
 use rustls::{
     DigitallySignedStruct, SignatureScheme,
@@ -64,11 +66,16 @@ impl ServerCertVerifier for TestCertificate {
 type Client = tokio_rustls::client::TlsStream<tokio::net::TcpStream>;
 
 async fn client() -> (Client, Arc<Bridge>, tokio::task::JoinHandle<()>) {
+    client_with_identity(crypto::Identity::generate().unwrap()).await
+}
+
+async fn client_with_identity(
+    identity: crypto::Identity,
+) -> (Client, Arc<Bridge>, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .unwrap();
     let address = listener.local_addr().unwrap();
-    let identity = crypto::Identity::generate().unwrap();
     let verifier = TestCertificate(identity.tls_cert_der().to_vec());
     let bridge = Arc::new(Bridge::default());
     let shared = server::Shared {
@@ -93,6 +100,132 @@ async fn client() -> (Client, Arc<Bridge>, tokio::task::JoinHandle<()>) {
         .await
         .unwrap();
     (client, bridge, task)
+}
+
+fn synthetic_device_identity(count: usize) -> (crypto::Identity, Vec<u8>, Vec<Vec<u8>>) {
+    use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, KeyUsagePurpose};
+    use rsa::pkcs8::{EncodePrivateKey, LineEnding};
+
+    let ca_params = |name: String| {
+        let mut params = CertificateParams::new(Vec::new()).unwrap();
+        params.distinguished_name.push(DnType::CommonName, name);
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+        params
+    };
+    let root_key = KeyPair::generate().unwrap();
+    let root = ca_params("Cast test root".into())
+        .self_signed(&root_key)
+        .unwrap();
+    let mut issuers = vec![(root, root_key)];
+    for index in 0..count {
+        let key = KeyPair::generate().unwrap();
+        let (issuer, issuer_key) = issuers.last().unwrap();
+        let certificate = ca_params(format!("Cast test intermediate {index}"))
+            .signed_by(&key, issuer, issuer_key)
+            .unwrap();
+        issuers.push((certificate, key));
+    }
+    let key = rsa::RsaPrivateKey::new(&mut rsa::rand_core::OsRng, 2048).unwrap();
+    let key_pem = key.to_pkcs8_pem(LineEnding::LF).unwrap();
+    let key_pair = KeyPair::from_pem(&key_pem).unwrap();
+    let (issuer, issuer_key) = issuers.last().unwrap();
+    let leaf = CertificateParams::new(vec!["cast-test.invalid".into()])
+        .unwrap()
+        .signed_by(&key_pair, issuer, issuer_key)
+        .unwrap();
+    let chain: Vec<_> = issuers.iter().skip(1).rev().map(|(cert, _)| cert).collect();
+    let pem = leaf.pem() + &chain.iter().map(|cert| cert.pem()).collect::<String>();
+    let expected_chain = chain.iter().map(|cert| cert.der().to_vec()).collect();
+
+    // Only newly generated test credentials enter this private temporary directory.
+    let directory = std::env::temp_dir().join(format!("cast-test-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&directory).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let cert_path = directory.join("certificate.pem");
+    let key_path = directory.join("key.pem");
+    std::fs::write(&cert_path, pem).unwrap();
+    std::fs::write(&key_path, key_pem.as_bytes()).unwrap();
+    let identity = crypto::Identity::load_real_device(&cert_path, &key_path);
+    std::fs::remove_file(cert_path).unwrap();
+    std::fs::remove_file(key_path).unwrap();
+    std::fs::remove_dir(directory).unwrap();
+    (identity.unwrap(), leaf.der().to_vec(), expected_chain)
+}
+
+#[tokio::test]
+async fn device_auth_keeps_complete_certificate_chain_and_nonce_binding() {
+    for count in [0, 1, 2] {
+        let (identity, expected_leaf, expected_chain) = synthetic_device_identity(count);
+        let nonce = vec![0x81; 32];
+        let mut signed = nonce.clone();
+        signed.extend_from_slice(identity.tls_cert_der());
+        let expected_signature = identity.sign(&signed);
+        let (mut stream, _, task) = client_with_identity(identity).await;
+        let challenge = DeviceAuthMessage {
+            challenge: Some(AuthChallenge {
+                sender_nonce: Some(nonce.clone()),
+                signature_algorithm: Some(SignatureAlgorithm::RsassaPkcs1v15 as i32),
+                hash_algorithm: Some(HashAlgorithm::Sha256 as i32),
+            }),
+            ..Default::default()
+        };
+        let message = CastMessage {
+            protocol_version: 0,
+            source_id: "sender-test".into(),
+            destination_id: "receiver-0".into(),
+            namespace: server::NS_DEVICE_AUTH.into(),
+            payload_type: PayloadType::Binary as i32,
+            payload_binary: Some(challenge.encode_to_vec()),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        stream.write_u32(message.len() as u32).await.unwrap();
+        stream.write_all(&message).await.unwrap();
+        let response = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let size = stream.read_u32().await.unwrap() as usize;
+                assert!(size <= 1024 * 1024);
+                let mut bytes = vec![0; size];
+                stream.read_exact(&mut bytes).await.unwrap();
+                let envelope = CastMessage::decode(bytes.as_slice()).unwrap();
+                if envelope.namespace == server::NS_DEVICE_AUTH {
+                    assert_eq!(envelope.source_id, "receiver-0");
+                    assert_eq!(envelope.destination_id, "sender-test");
+                    break DeviceAuthMessage::decode(envelope.payload_binary.unwrap().as_slice())
+                        .unwrap()
+                        .response
+                        .unwrap();
+                }
+            }
+        })
+        .await
+        .unwrap();
+        task.abort();
+        assert_eq!(
+            response.intermediate_certificate.len(),
+            count,
+            "chain was truncated"
+        );
+        assert!(
+            response.client_auth_certificate == expected_leaf,
+            "leaf changed"
+        );
+        assert!(
+            response.intermediate_certificate == expected_chain,
+            "chain order changed"
+        );
+        assert_eq!(response.sender_nonce, Some(nonce));
+        assert!(
+            response.signature == expected_signature,
+            "nonce/TLS binding changed"
+        );
+        assert_eq!(response.hash_algorithm, Some(HashAlgorithm::Sha256 as i32));
+    }
 }
 
 async fn request(

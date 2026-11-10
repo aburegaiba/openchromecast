@@ -41,8 +41,8 @@ pub struct Identity {
     signer: SigningKey<Sha256>,
     /// `client_auth_certificate` (must chain to a Cast root CA in real devices).
     auth_cert_der: Vec<u8>,
-    /// `intermediate_certificate` chain (first extra cert), if any.
-    intermediate_der: Option<Vec<u8>>,
+    /// Certificates after the leaf, preserved in the supplied PEM order.
+    intermediate_ders: Vec<Vec<u8>>,
     /// The short-lived TLS certificate (also the signature-binding peer cert).
     tls_cert_der: Vec<u8>,
     /// The TLS private key (PKCS#8 DER), served by rustls.
@@ -70,7 +70,7 @@ impl Identity {
         Ok(Self {
             signer,
             auth_cert_der: cert_der.clone(),
-            intermediate_der: None,
+            intermediate_ders: Vec::new(),
             tls_cert_der: cert_der,
             tls_key_der: key_der,
         })
@@ -90,7 +90,7 @@ impl Identity {
             .context("no certificate found in PEM")?
             .as_ref()
             .to_vec();
-        let intermediate_der = certs.get(1).map(|c| c.as_ref().to_vec());
+        let intermediate_ders = certs.iter().skip(1).map(|c| c.as_ref().to_vec()).collect();
 
         // Real Chromecast keys are RSA (PKCS#8 "PRIVATE KEY" or PKCS#1
         // "RSA PRIVATE KEY").
@@ -106,7 +106,7 @@ impl Identity {
         Ok(Self {
             signer: SigningKey::new(key),
             auth_cert_der,
-            intermediate_der,
+            intermediate_ders,
             tls_cert_der,
             tls_key_der,
         })
@@ -122,8 +122,8 @@ impl Identity {
         &self.auth_cert_der
     }
 
-    pub fn intermediate_der(&self) -> Option<&[u8]> {
-        self.intermediate_der.as_deref()
+    pub fn intermediate_ders(&self) -> &[Vec<u8>] {
+        &self.intermediate_ders
     }
 
     pub fn tls_cert_der(&self) -> &[u8] {
