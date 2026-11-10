@@ -16,7 +16,10 @@ discovery. This is a prototype, not a Google-certified Chromecast.
 - Self-signed device authentication is unchanged. Google SDK applications may
   reject it even when discovery and Home Assistant control work. No YouTube,
   Netflix/DRM, screen mirroring, multiroom or universal sender support claim.
-- Explicit start only, no boot receiver. No system-volume change. Initial
+- Optional automatic boot resume, disabled by default. It resumes only after
+  the switch is enabled and the receiver has been explicitly started; stopping
+  from the screen or notification prevents the next resume. The boot receiver
+  never opens an activity or takes over Home Assistant. No system-volume change. Initial
   software volume is 15 percent of the existing device media volume.
 - Targeted at Android 11 Echo hardware first. Other Android versions, long
   uptime beyond the generated TLS certificate lifetime and physical A/V remain
@@ -65,6 +68,15 @@ Review the APK signing certificate with the SDK's `apksigner` before applying.
 5. Stop from the UI or notification. Service destruction withdraws discovery,
    releases player/network resources and stops Rust. Restart the previous
    receiver if it had been stopped. Do not uninstall or clear data implicitly.
+6. For unattended devices, enable automatic start and start the receiver, then
+   reboot normally. Verify a foreground receiver service, the same discovery
+   UUID and a real Cast connection without opening this app. A force-stopped app
+   still requires an explicit user launch before Android delivers boot events.
+
+The idle service uses the `connectedDevice` foreground type. It does not launch
+a `mediaPlayback` service directly from `BOOT_COMPLETED`; this matters on
+Android 15 and later. Versions other than the tested Echo Android 11 remain
+unqualified. No overlay or background-activity privilege is requested.
 
 ### Android 11 hardware check
 
@@ -79,3 +91,11 @@ Android NSD currently announces the device's IPv6 addresses as well as IPv4,
 while the native listener is IPv4-only. IPv6 connections remain unqualified and
 must be addressed before claiming reliable discovery across all senders. Do not
 enable additional globally reachable listeners or change firewall rules silently.
+
+The 0.1.2 prototype also passed a real Android 11 reboot with automatic start
+enabled: the receiver resumed as a foreground service without opening its UI,
+kept its discovery UUID, and left Companion visible. Android delivered the boot
+event later than the first 35-second post-connection check; acceptance must wait
+for actual boot broadcast delivery rather than treating that short timeout as
+proof of a service failure. Device-auth nonce/signature still passed, while the
+self-signed chain remained untrusted by Google Cast roots.

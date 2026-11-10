@@ -2,7 +2,8 @@
 
 Native operational settings, not a media catalogue or replacement dashboard.
 Material 3 day/night theme, standard system typography and Back behavior.
-Single scrollable vertical flow: state, receiver name, start/stop, video, return.
+Single scrollable vertical flow: state, receiver name, automatic-start switch,
+start/stop, video, return.
 Use platform media/action icons and 48dp minimum targets with 12dp separation.
 System bars remain outside the content. No nested cards or custom navigation.
 Real startup/failure/running states determine enabled controls; no fake metrics.

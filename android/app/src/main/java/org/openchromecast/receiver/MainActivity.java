@@ -2,6 +2,7 @@ package org.openchromecast.receiver;
 
 import android.Manifest;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.os.*;
 import android.view.*;
 import android.widget.*;
@@ -9,6 +10,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import com.google.android.material.appbar.MaterialToolbar;
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.textfield.*;
+import com.google.android.material.materialswitch.MaterialSwitch;
 
 public final class MainActivity extends AppCompatActivity {
     static boolean visible;
@@ -18,7 +20,8 @@ public final class MainActivity extends AppCompatActivity {
     private TextInputEditText name;
     private final Runnable refresh = new Runnable() {
         @Override public void run() {
-            state.setText(ReceiverService.summary);
+            String next = ReceiverService.summary;
+            if (!next.contentEquals(state.getText())) state.setText(next);
             boolean running = ReceiverService.current != null;
             boolean nativeBusy = NativeBridge.running();
             start.setEnabled(!running && !nativeBusy); stop.setEnabled(running); name.setEnabled(!running && !nativeBusy);
@@ -42,6 +45,14 @@ public final class MainActivity extends AppCompatActivity {
         name.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(48)});
         name.setText(getSharedPreferences("receiver", MODE_PRIVATE).getString("name", "OpenChromecast Android"));
         field.addView(name); panel.addView(field, spaced());
+        SharedPreferences settings = getSharedPreferences(ReceiverStartupPolicy.PREFERENCES, MODE_PRIVATE);
+        MaterialSwitch automatic = new MaterialSwitch(this);
+        automatic.setText(R.string.automatic_start);
+        automatic.setMinHeight(dp(48));
+        automatic.setChecked(settings.getBoolean(ReceiverStartupPolicy.AUTO_START, false));
+        automatic.setOnCheckedChangeListener((view, checked) -> settings.edit()
+            .putBoolean(ReceiverStartupPolicy.AUTO_START, checked).apply());
+        panel.addView(automatic, spaced());
         start = button("Demarrer", android.R.drawable.ic_media_play);
         start.setOnClickListener(view -> {
             String value = name.getText() == null ? "" : name.getText().toString().trim();
@@ -51,10 +62,14 @@ public final class MainActivity extends AppCompatActivity {
             if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
                 requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1);
             startForegroundService(new Intent(this, ReceiverService.class));
+            settings.edit().putBoolean(ReceiverStartupPolicy.ENABLED, true).apply();
         });
         panel.addView(start, spaced());
         stop = button("Arreter", android.R.drawable.ic_media_pause);
-        stop.setOnClickListener(view -> stopService(new Intent(this, ReceiverService.class)));
+        stop.setOnClickListener(view -> {
+            settings.edit().putBoolean(ReceiverStartupPolicy.ENABLED, false).apply();
+            stopService(new Intent(this, ReceiverService.class));
+        });
         panel.addView(stop, spaced());
         MaterialButton video = button("Ouvrir la video", android.R.drawable.ic_menu_view);
         video.setOnClickListener(view -> startActivity(new Intent(this, VideoActivity.class)));

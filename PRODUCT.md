@@ -21,4 +21,5 @@ need explicit approval. No DRM or complete Cast compatibility claim.
 
 ## Operating Context
 Local network; explicit start/stop and Android notification. No server-side
-media relay, account credentials, root, microphone or automatic boot takeover.
+media relay, account credentials, root or microphone. Optional boot resume is
+explicitly enabled in receiver settings; it never opens another screen.

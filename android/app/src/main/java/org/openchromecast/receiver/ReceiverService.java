@@ -106,9 +106,14 @@ public final class ReceiverService extends Service {
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
-        // Explicit user start only: no boot receiver or persistent retry loop.
-        if (intent != null && "stop".equals(intent.getAction())) stopSelf();
-        return START_NOT_STICKY;
+        SharedPreferences settings = getSharedPreferences(ReceiverStartupPolicy.PREFERENCES, MODE_PRIVATE);
+        if (intent != null && "stop".equals(intent.getAction())) {
+            settings.edit().putBoolean(ReceiverStartupPolicy.ENABLED, false).apply();
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+        return settings.getBoolean(ReceiverStartupPolicy.AUTO_START, false)
+            && settings.getBoolean(ReceiverStartupPolicy.ENABLED, false) ? START_STICKY : START_NOT_STICKY;
     }
 
     private final Runnable pump = new Runnable() {
