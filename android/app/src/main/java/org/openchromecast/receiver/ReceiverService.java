@@ -32,6 +32,7 @@ public final class ReceiverService extends Service {
     private WifiManager.MulticastLock multicast;
     private ConnectivityManager connectivity;
     private ConnectivityManager.NetworkCallback networkCallback;
+    private final NetworkSelection networkSelection = new NetworkSelection();
     private MediaSession mediaSession;
     private String deviceId, receiverName;
 
@@ -91,9 +92,14 @@ public final class ReceiverService extends Service {
         multicast.setReferenceCounted(false);
         multicast.acquire();
         connectivity = getSystemService(ConnectivityManager.class);
+        networkSelection.available(connectivity.getActiveNetwork());
         networkCallback = new ConnectivityManager.NetworkCallback() {
             @Override public void onAvailable(Network network) {
                 handler.post(() -> {
+                    if (!destroying) {
+                        networkSelection.available(network);
+                        NativeBridge.networkChanged("[]");
+                    }
                     if (ready && !destroying) {
                         withdraw();
                         handler.postDelayed(() -> { if (ready && !destroying) advertise(); }, 500);
@@ -102,9 +108,17 @@ public final class ReceiverService extends Service {
             }
             @Override public void onLost(Network network) {
                 handler.post(() -> {
-                    if (!destroying) {
+                    if (!destroying && networkSelection.lost(network)) {
+                        NativeBridge.networkChanged("[]");
                         withdraw(); summary = "Reseau deconnecte"; notifyState();
                         handler.postDelayed(() -> { if (ready && !destroying) advertise(); }, 500);
+                    }
+                });
+            }
+            @Override public void onLinkPropertiesChanged(Network network, LinkProperties properties) {
+                handler.post(() -> {
+                    if (!destroying && networkSelection.isCurrent(network)) {
+                        NativeBridge.networkChanged(networkPrefixes(properties).toString());
                     }
                 });
             }
@@ -116,11 +130,28 @@ public final class ReceiverService extends Service {
             File youtube = new File(privateDirectory, "youtube");
             if (!youtube.isDirectory() && !youtube.mkdir()) { fail("Dossier YouTube indisponible"); return; }
             android.system.Os.chmod(youtube.getAbsolutePath(), 0700);
-            String error = NativeBridge.start(PORT, deviceId, receiverName, volume, privateDirectory.getAbsolutePath());
+            String error = NativeBridge.start(PORT, deviceId, receiverName, volume,
+                privateDirectory.getAbsolutePath(), currentNetworkPrefixes().toString());
             if (!error.isEmpty()) { fail(error); return; }
         } catch (android.system.ErrnoException error) { fail("Dossier YouTube non protege"); return; }
         catch (LinkageError error) { fail("Bibliotheque native incompatible"); return; }
         handler.post(pump);
+    }
+
+    private JSONArray currentNetworkPrefixes() {
+        Network active = connectivity.getActiveNetwork();
+        return networkPrefixes(active == null ? null : connectivity.getLinkProperties(active));
+    }
+
+    private JSONArray networkPrefixes(LinkProperties properties) {
+        JSONArray prefixes = new JSONArray();
+        if (properties != null) {
+            for (LinkAddress link : properties.getLinkAddresses()) {
+                String prefix = NetworkPrefixes.format(link.getAddress(), link.getPrefixLength());
+                if (prefix != null) prefixes.put(prefix);
+            }
+        }
+        return prefixes;
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {

@@ -1,4 +1,4 @@
-//! Loopback TLS tests: no LAN announcement, external media fetch or real playback.
+//! Loopback TLS clients: no LAN announcement, external media fetch or real playback.
 
 use super::*;
 use crate::proto::cast_channel::{
@@ -87,6 +87,7 @@ async fn client_with_identity(
         state: Arc::new(tokio::sync::Mutex::new(state::AppState::default())),
         identity: Arc::new(identity),
         player: bridge.spawn(),
+        connection_filter: None,
         youtube: None,
     };
     let task = tokio::spawn(async move {
@@ -156,6 +157,47 @@ async fn auth_response(client: &mut Client, nonce: Vec<u8>) -> AuthResponse {
 }
 
 #[tokio::test]
+async fn connection_filter_rejects_before_tls_and_applies_to_each_new_connection() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let listener = tokio::net::TcpListener::bind(("::1", 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let identity = crypto::Identity::generate().unwrap();
+    let expected = identity.tls_cert_der().to_vec();
+    let allowed = Arc::new(AtomicBool::new(false));
+    let gate = allowed.clone();
+    let bridge = Arc::new(Bridge::default());
+    let shared = server::Shared {
+        state: Arc::new(tokio::sync::Mutex::new(state::AppState::default())),
+        identity: Arc::new(identity),
+        player: bridge.spawn(),
+        connection_filter: Some(Arc::new(move |_| gate.load(Ordering::SeqCst))),
+        youtube: None,
+    };
+    let task = tokio::spawn(async move {
+        let _ = server::run(listener, shared).await;
+    });
+    let mut denied = tokio::net::TcpStream::connect(address).await.unwrap();
+    let mut byte = [0];
+    let read = tokio::time::timeout(std::time::Duration::from_secs(2), denied.read(&mut byte))
+        .await
+        .unwrap();
+    assert!(
+        matches!(read, Ok(0) | Err(_)),
+        "TLS bytes sent before network policy"
+    );
+    allowed.store(true, Ordering::SeqCst);
+    let mut accepted = connect_loopback(address, Some(expected)).await.unwrap();
+    assert!(
+        auth_response(&mut accepted, vec![0x42; 32])
+            .await
+            .sender_nonce
+            .is_some()
+    );
+    assert!(!bridge.poll().iter().any(|event| event["type"] == "load"));
+    task.abort();
+}
+
+#[tokio::test]
 async fn tls_rotation_preserves_existing_connection_auth_and_active_media() {
     use std::sync::atomic::{AtomicI64, Ordering};
     let (identity, leaf, chain) = synthetic_device_identity(2);
@@ -173,6 +215,7 @@ async fn tls_rotation_preserves_existing_connection_auth_and_active_media() {
         state: Arc::new(tokio::sync::Mutex::new(state::AppState::default())),
         identity: identity.clone(),
         player: bridge.spawn(),
+        connection_filter: None,
         youtube: None,
     };
     let task = tokio::spawn(async move {

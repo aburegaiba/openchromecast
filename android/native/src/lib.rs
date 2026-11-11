@@ -3,6 +3,7 @@
 
 mod device_info;
 mod identity_config;
+mod network;
 #[cfg(test)]
 mod protocol_tests;
 
@@ -42,6 +43,7 @@ struct Session {
     bridge: Arc<Bridge>,
     shutdown: Arc<Notify>,
     finished: Arc<AtomicBool>,
+    network: network::LanPolicy,
 }
 static SESSION: OnceLock<Mutex<Option<Session>>> = OnceLock::new();
 fn session() -> &'static Mutex<Option<Session>> {
@@ -75,16 +77,19 @@ pub extern "system" fn Java_org_openchromecast_receiver_NativeBridge_start(
     name: JString,
     initial_volume: jfloat,
     private_dir: JString,
+    network_prefixes: JString,
 ) -> jstring {
     let result = (|| -> anyhow::Result<()> {
         let device_id: String = env.get_string(&device_id)?.into();
         let name: String = env.get_string(&name)?.into();
         let private_dir: String = env.get_string(&private_dir)?.into();
+        let network_prefixes: String = env.get_string(&network_prefixes)?.into();
         start(
             port,
             device_info::DeviceInfo::new(&device_id, name)?,
             initial_volume,
             std::path::PathBuf::from(private_dir),
+            network::LanPolicy::new(&network_prefixes)?,
         )
     })();
     response(
@@ -98,6 +103,7 @@ fn start(
     info: device_info::DeviceInfo,
     initial_volume: f32,
     private_dir: std::path::PathBuf,
+    network: network::LanPolicy,
 ) -> anyhow::Result<()> {
     anyhow::ensure!((1024..=65535).contains(&port), "invalid port");
     anyhow::ensure!(
@@ -117,6 +123,7 @@ fn start(
     let worker_shutdown = shutdown.clone();
     let finished = Arc::new(AtomicBool::new(false));
     let worker_finished = finished.clone();
+    let worker_network = network.clone();
     std::thread::Builder::new()
         .name("cast-receiver".into())
         .spawn(move || {
@@ -127,8 +134,9 @@ fn start(
                     .build()?;
                 rt.block_on(async {
                     // Bind before announcing readiness. Port conflicts are real startup errors.
-                    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port as u16)).await?;
-                    let metadata = tokio::net::TcpListener::bind(("0.0.0.0", device_info::HTTP_PORT)).await?;
+                    let listener = network::bind(port as u16)?;
+                    let metadata = network::MetadataListener::new(
+                        network::bind(device_info::HTTP_PORT)?, worker_network.filter());
                     let identity_root = private_dir.clone();
                     let identity = tokio::task::spawn_blocking(move || {
                         identity_config::load(&identity_root)
@@ -147,6 +155,7 @@ fn start(
                         state,
                         identity: Arc::new(identity),
                         player,
+                        connection_filter: Some(worker_network.filter()),
                         youtube: Some(host.clone()),
                     };
                     worker_bridge.event(json!({"type":"ready"}))?;
@@ -171,6 +180,7 @@ fn start(
         bridge,
         shutdown,
         finished,
+        network,
     });
     Ok(())
 }
@@ -185,8 +195,32 @@ mod startup_tests {
             let info =
                 device_info::DeviceInfo::new("e8d8571a824a45df88929e1c220f602d", "Receiver".into())
                     .unwrap();
-            assert!(start(8009, info, volume, std::path::PathBuf::from("unused")).is_err());
+            assert!(
+                start(
+                    8009,
+                    info,
+                    volume,
+                    std::path::PathBuf::from("unused"),
+                    network::LanPolicy::default()
+                )
+                .is_err()
+            );
         }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_openchromecast_receiver_NativeBridge_networkChanged(
+    mut env: JNIEnv,
+    _class: JClass,
+    prefixes: JString,
+) {
+    let Ok(prefixes) = env.get_string(&prefixes) else {
+        return;
+    };
+    let guard = session().lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(session) = guard.as_ref() {
+        session.network.update(&prefixes.to_string_lossy());
     }
 }
 

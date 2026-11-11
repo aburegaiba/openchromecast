@@ -33,6 +33,7 @@ pub const NS_YOUTUBE: &str = "urn:x-cast:com.google.youtube.mdx";
 
 /// A sink for framed messages destined for one client connection.
 pub type MessageSink = mpsc::Sender<Vec<u8>>;
+pub type ConnectionFilter = Arc<dyn Fn(SocketAddr) -> bool + Send + Sync>;
 
 /// Everything shared between connections and tasks.
 #[derive(Clone)]
@@ -40,6 +41,7 @@ pub struct Shared {
     pub state: Arc<Mutex<AppState>>,
     pub identity: Arc<Identity>,
     pub player: PlayerHandle,
+    pub connection_filter: Option<ConnectionFilter>,
     #[cfg(feature = "embedded-player")]
     pub youtube: Option<Arc<youtube::Host>>,
 }
@@ -74,6 +76,9 @@ pub(crate) async fn run_with_clock(
         tokio::select! {
             accepted = listener.accept() => {
                 let (tcp, peer) = accepted?;
+                if shared.connection_filter.as_ref().is_some_and(|allows| !allows(peer)) {
+                    continue;
+                }
                 if !shared.identity.tls_valid_at(clock()) {
                     debug!("TLS certificate is not currently valid; waiting for renewal");
                     continue;

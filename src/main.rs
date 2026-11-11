@@ -201,6 +201,7 @@ pub(crate) async fn run_receiver(cli: config::Cli, shutdown: Arc<Notify>) -> Res
         state: Arc::new(Mutex::new(state::AppState::default())),
         identity: Arc::new(identity),
         player,
+        connection_filter: None,
         #[cfg(feature = "embedded-player")]
         youtube: None,
     };

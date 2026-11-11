@@ -139,10 +139,16 @@ paused, sought, resumed and stopped it. The owner confirmed the short tones at
 50 percent software volume with Companion in the foreground. This is an audio
 acceptance result, not a Google SDK, phone-video, DRM or multiroom certification.
 
-Android NSD currently announces the device's IPv6 addresses as well as IPv4,
-while the native listener is IPv4-only. IPv6 connections remain unqualified and
-must be addressed before claiming reliable discovery across all senders. Do not
-enable additional globally reachable listeners or change firewall rules silently.
+Version 0.1.10 adds dual-stack listeners on the existing Cast and metadata ports.
+IPv4 behavior is preserved. IPv6 loopback, link-local peers and peers in the
+active Android interface's /64-or-narrower prefixes are accepted; other IPv6
+peers are closed before TLS or HTTP. Prefixes come from LinkProperties, not a
+static subnet list. Missing/invalid updates revoke old prefixes, and late events
+for a previous default network are ignored. This is an application accept policy,
+not a kernel packet firewall: TCP handshakes can still complete before rejection.
+It neither supplies Google credentials nor changes the router's firewall. Host
+tests cover both address families and deny-before-protocol behavior; Android
+hardware qualification of this version is pending.
 
 The 0.1.2 prototype also passed a real Android 11 reboot with automatic start
 enabled: the receiver resumed as a foreground service without opening its UI,
