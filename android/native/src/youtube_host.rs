@@ -9,7 +9,6 @@ use anyhow::{Result, ensure};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -28,18 +27,21 @@ const MAX_SENDERS: usize = 8;
 
 struct Channels {
     transport: String,
-    senders: Mutex<HashMap<String, MessageSink>>,
+    senders: Mutex<Vec<(String, MessageSink)>>,
 }
 
 impl Channels {
     async fn register(&self, id: &str, tx: &MessageSink) -> Result<()> {
         ensure!(!id.is_empty() && id.len() <= 128, "invalid sender");
         let mut senders = self.senders.lock().await;
-        ensure!(
-            senders.contains_key(id) || senders.len() < MAX_SENDERS,
-            "sender limit reached"
-        );
-        senders.insert(id.to_owned(), tx.clone());
+        if senders
+            .iter()
+            .any(|(sender, channel)| sender == id && channel.same_channel(tx))
+        {
+            return Ok(());
+        }
+        ensure!(senders.len() < MAX_SENDERS, "sender limit reached");
+        senders.push((id.to_owned(), tx.clone()));
         Ok(())
     }
 }
@@ -47,7 +49,7 @@ impl Channels {
 #[async_trait]
 impl SenderChannel for Channels {
     async fn send_custom(&self, namespace: &str, value: Value) {
-        if namespace != NS_YOUTUBE && namespace != NS_MEDIA {
+        if namespace != NS_YOUTUBE {
             return;
         }
         let targets = self.senders.lock().await.clone();
@@ -133,18 +135,6 @@ impl Host {
                         .session
                         .on_playback_update(&active.context, playback_state(snapshot))
                         .await;
-                    if active.valid.load(Ordering::Acquire)
-                        && let Some(status) =
-                            crate::media::player_status(&host.player, &host.state).await
-                    {
-                        active
-                            .channels
-                            .send_custom(
-                                NS_MEDIA,
-                                json!({"type":"MEDIA_STATUS", "status":[status]}),
-                            )
-                            .await;
-                    }
                 }
             }
         });
@@ -169,7 +159,7 @@ impl Host {
         }
         let channels = Arc::new(Channels {
             transport: session.id.clone(),
-            senders: Mutex::new(HashMap::new()),
+            senders: Mutex::new(Vec::new()),
         });
         let valid = Arc::new(AtomicBool::new(true));
         let controller = Arc::new(Controller {
@@ -215,7 +205,7 @@ impl Host {
                 .senders
                 .lock()
                 .await
-                .retain(|_, channel| !channel.same_channel(tx));
+                .retain(|(_, channel)| !channel.same_channel(tx));
         }
     }
 
@@ -538,7 +528,7 @@ mod tests {
     async fn sender_limit_and_disconnect_do_not_keep_writer_alive() {
         let channels = Channels {
             transport: "synthetic".into(),
-            senders: Mutex::new(HashMap::new()),
+            senders: Mutex::new(Vec::new()),
         };
         let (tx, rx) = tokio::sync::mpsc::channel(2);
         for id in 0..MAX_SENDERS {
@@ -549,9 +539,28 @@ mod tests {
             .senders
             .lock()
             .await
-            .retain(|_, sender| !sender.same_channel(&tx));
+            .retain(|(_, sender)| !sender.same_channel(&tx));
         drop(tx);
         assert!(rx.is_closed());
+    }
+
+    #[tokio::test]
+    async fn identical_sender_ids_on_different_sockets_both_receive_mdx() {
+        let channels = Channels {
+            transport: "synthetic".into(),
+            senders: Mutex::new(Vec::new()),
+        };
+        let (first, mut first_rx) = tokio::sync::mpsc::channel(2);
+        let (second, mut second_rx) = tokio::sync::mpsc::channel(2);
+        channels.register("sender-0", &first).await.unwrap();
+        channels.register("sender-0", &second).await.unwrap();
+        channels.register("sender-0", &second).await.unwrap();
+        assert_eq!(channels.senders.lock().await.len(), 2);
+        channels
+            .send_custom(NS_YOUTUBE, json!({"type":"synthetic"}))
+            .await;
+        assert!(first_rx.try_recv().is_ok());
+        assert!(second_rx.try_recv().is_ok());
     }
 
     #[tokio::test]

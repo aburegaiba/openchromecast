@@ -86,6 +86,17 @@ async fn handle_connection(tcp: TcpStream, peer: SocketAddr, shared: Shared) -> 
         }
     });
 
+    #[cfg(feature = "embedded-player")]
+    let (transport_tx, transport_rx) = tokio::sync::watch::channel(None);
+    #[cfg(feature = "embedded-player")]
+    let observer = observe_receiver(
+        shared.state.clone(),
+        shared.player.clone(),
+        transport_rx,
+        tx.clone(),
+    )
+    .await;
+
     // Read + dispatch loop. Track whether this connection owns the active
     // session's transport channel.
     let mut transport: Option<String> = None;
@@ -109,6 +120,8 @@ async fn handle_connection(tcp: TcpStream, peer: SocketAddr, shared: Shared) -> 
             if let Some(dest) = &transport {
                 let mut st = shared.state.lock().await;
                 if st.session.as_ref().is_some_and(|s| s.id == *dest) {
+                    #[cfg(feature = "embedded-player")]
+                    transport_tx.send_replace(transport.clone());
                     *st.session_connections.entry(dest.clone()).or_insert(0) += 1;
                 }
             }
@@ -118,6 +131,8 @@ async fn handle_connection(tcp: TcpStream, peer: SocketAddr, shared: Shared) -> 
         }
     }
 
+    #[cfg(feature = "embedded-player")]
+    observer.abort();
     #[cfg(feature = "embedded-player")]
     if let Some(host) = &shared.youtube {
         host.disconnect(&tx).await;
@@ -166,6 +181,160 @@ async fn handle_connection(tcp: TcpStream, peer: SocketAddr, shared: Shared) -> 
 
     info!("connection {peer} closed");
     Ok(())
+}
+
+#[cfg(feature = "embedded-player")]
+async fn observe_receiver(
+    state: Arc<Mutex<AppState>>,
+    player: PlayerHandle,
+    transport: tokio::sync::watch::Receiver<Option<String>>,
+    tx: MessageSink,
+) -> tokio::task::JoinHandle<()> {
+    let mut previous = receiver::receiver_status(&*state.lock().await);
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        tick.tick().await;
+        let mut previous_media = None;
+        loop {
+            tick.tick().await;
+            let (status, session_id) = {
+                let state = state.lock().await;
+                (
+                    receiver::receiver_status(&state),
+                    state.session.as_ref().map(|s| s.id.clone()),
+                )
+            };
+            if previous != status {
+                previous = status.clone();
+                if send_json(
+                    &tx,
+                    "receiver-0",
+                    "*",
+                    NS_RECEIVER,
+                    &serde_json::json!({"type":"RECEIVER_STATUS", "status":status}),
+                )
+                .await
+                .is_err()
+                {
+                    break;
+                }
+            }
+            let bound = transport.borrow().clone();
+            if session_id.is_none() || bound != session_id {
+                previous_media = None;
+                continue;
+            }
+            let Some(media) = media::player_status(&player, &state).await else {
+                continue;
+            };
+            if media["playerState"] == "IDLE"
+                && !media["media"].is_null()
+                && media.get("idleReason").is_none()
+            {
+                continue;
+            }
+            if state.lock().await.session.as_ref().map(|s| &s.id) != session_id.as_ref() {
+                continue;
+            }
+            if previous_media.as_ref() != Some(&media) {
+                previous_media = Some(media.clone());
+                if send_json(
+                    &tx,
+                    session_id.as_deref().unwrap(),
+                    "*",
+                    NS_MEDIA,
+                    &serde_json::json!({"type":"MEDIA_STATUS", "status":[media]}),
+                )
+                .await
+                .is_err()
+                {
+                    break;
+                }
+            }
+        }
+    })
+}
+
+#[cfg(all(test, feature = "embedded-player"))]
+mod observer_tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    async fn frame(rx: &mut mpsc::Receiver<Vec<u8>>, namespace: &str) -> Value {
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let data = rx.recv().await.unwrap();
+                let message = CastMessage::decode(&data[4..]).unwrap();
+                if message.namespace == namespace {
+                    assert_eq!(message.destination_id, "*");
+                    return payload_json(&message).unwrap();
+                }
+            }
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn observer_publishes_changes_without_an_initial_unsolicited_frame() {
+        let state = Arc::new(Mutex::new(AppState::default()));
+        let (tx, mut rx) = mpsc::channel(8);
+        let (_, transport) = tokio::sync::watch::channel(None);
+        let task = observe_receiver(state.clone(), PlayerHandle::spawn_null(), transport, tx).await;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv())
+                .await
+                .is_err()
+        );
+        state.lock().await.volume = 0.7;
+        let value = frame(&mut rx, NS_RECEIVER).await;
+        assert!((value["status"]["volume"]["level"].as_f64().unwrap() - 0.7).abs() < 0.001);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(1100), rx.recv())
+                .await
+                .is_err()
+        );
+        task.abort();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn media_status_requires_binding_to_the_current_transport() {
+        let state = Arc::new(Mutex::new(AppState::default()));
+        let (tx, mut rx) = mpsc::channel(8);
+        let (bound, transport) = tokio::sync::watch::channel(None);
+        let task = observe_receiver(state.clone(), PlayerHandle::spawn_null(), transport, tx).await;
+        let session = crate::state::Session::new("CC1AD845".into(), 1);
+        let id = session.id.clone();
+        state.lock().await.session = Some(session);
+        assert_eq!(
+            frame(&mut rx, NS_RECEIVER).await["status"]["applications"][0]["appId"],
+            "CC1AD845"
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(1100), rx.recv())
+                .await
+                .is_err()
+        );
+        bound.send_replace(Some(id));
+        let status = frame(&mut rx, NS_MEDIA).await;
+        assert_eq!(status["status"][0]["playerState"], "IDLE");
+        assert_eq!(status["status"][0]["idleReason"], json!("CANCELLED"));
+        state.lock().await.session = Some(crate::state::Session::new("CC1AD845".into(), 2));
+        frame(&mut rx, NS_RECEIVER).await;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(1100), rx.recv())
+                .await
+                .is_err()
+        );
+        task.abort();
+    }
 }
 
 fn tls_acceptor(identity: &Identity) -> Result<TlsAcceptor> {

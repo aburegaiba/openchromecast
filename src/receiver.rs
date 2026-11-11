@@ -190,7 +190,7 @@ fn app_ids_from(payload: &Value) -> Vec<String> {
 }
 
 /// Build the `RECEIVER_STATUS.status` object from the shared state.
-fn receiver_status(state: &AppState) -> Value {
+pub(crate) fn receiver_status(state: &AppState) -> Value {
     let apps = match &state.session {
         Some(s) => json!([{
             "appId": s.app_id,

@@ -16,7 +16,7 @@ commands. The private Lounge identity is stable in `no_backup/youtube`; never
 export it in diagnostics or commit it. SponsorBlock is disabled by default.
 
 Media3 receives the provider's inline DASH manifest in memory and HTTP request
-headers. No external host is needed to serve the manifest. Native commands keep
+headers. No external host is needed to serve the manifest. The adapter keeps
 the provider's XML intact except parsed AdaptationSet ID attributes: its textual
 IDs are mapped to unique integers for Media3's DASH parser. Media URLs and their
 escaping are preserved; this is not a regex replacement over arbitrary XML.
@@ -56,3 +56,11 @@ a Cast media LOAD. Video frames were nonblank and moving after explicitly
 opening the existing video screen. Switching back to Default Media Receiver
 and playing a synthetic HTTP WAV succeeded. Tests were muted, with no phone
 acceptance or automatic background video takeover claim.
+
+The 0.1.6 prototype also sends receiver-state changes to passive Cast clients
+and media-state changes only to connections bound to the current transport.
+This observer reads local memory once per second; it adds no cloud polling.
+It is cancelled on socket close, and preserves Cast's incremental frame reader.
+Two sockets using the same sender ID no longer overwrite each other's MDX
+channel. Home Assistant observed playback started by another client, and its
+pause/play/stop/turn-off actions were independently confirmed by the receiver.
