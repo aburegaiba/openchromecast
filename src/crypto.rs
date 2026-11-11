@@ -81,7 +81,13 @@ impl Identity {
     pub fn load_real_device(cert_path: &Path, key_path: &Path) -> Result<Self> {
         let cert_pem = std::fs::read_to_string(cert_path)?;
         let key_pem = std::fs::read_to_string(key_path)?;
+        let identity = Self::from_device_pem(&cert_pem, &key_pem)?;
+        info!("loaded device credentials from {cert_path:?}");
+        Ok(identity)
+    }
 
+    /// Parse a supplied identity. Key consistency is not a Cast trust-chain check.
+    pub fn from_device_pem(cert_pem: &str, key_pem: &str) -> Result<Self> {
         let certs = rustls_pemfile::certs(&mut Cursor::new(cert_pem.as_bytes()))
             .collect::<std::result::Result<Vec<_>, _>>()
             .context("failed to parse certificate PEM")?;
@@ -94,15 +100,22 @@ impl Identity {
 
         // Real Chromecast keys are RSA (PKCS#8 "PRIVATE KEY" or PKCS#1
         // "RSA PRIVATE KEY").
-        let key = RsaPrivateKey::from_pkcs8_pem(&key_pem)
-            .or_else(|_| rsa::pkcs1::DecodeRsaPrivateKey::from_pkcs1_pem(&key_pem))
+        let key = RsaPrivateKey::from_pkcs8_pem(key_pem)
+            .or_else(|_| rsa::pkcs1::DecodeRsaPrivateKey::from_pkcs1_pem(key_pem))
             .context("failed to parse device private key (expected RSA PKCS#8/PKCS#1 PEM)")?;
+        let pkcs8 = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+            key.to_pkcs8_der()?.as_bytes().to_vec(),
+        ));
+        let signing_key = rustls::crypto::ring::sign::any_supported_type(&pkcs8)
+            .context("device key is not supported by TLS")?;
+        rustls::sign::CertifiedKey::new(vec![certs[0].clone()], signing_key)
+            .keys_match()
+            .context("device certificate and key do not match")?;
 
         // The real auth cert is long-lived, which would fail the 4-day TLS
         // check — so use a fresh short-lived TLS cert instead.
         let (tls_key_der, tls_cert_der) = generate_rsa_cert_short_lived("OpenChromecast")?;
 
-        info!("loaded device credentials from {cert_path:?}");
         Ok(Self {
             signer: SigningKey::new(key),
             auth_cert_der,

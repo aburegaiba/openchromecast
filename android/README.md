@@ -45,6 +45,19 @@ Cast protocol implementation. Desktop modules remain available on desktop.
 
 ## Build
 
+Development 0.1.8 adds optional per-device PEM loading from the app-private
+`no_backup/identity/` directory: `certificate.pem` contains the leaf and
+intermediates, and `key.pem` is its matching RSA PKCS#8 or PKCS#1 key.
+Directories must be application-owned mode 0700, and regular single-link files
+mode 0600, at most 64 KiB each. Symlinks and incomplete/invalid configuration
+are refused; only an absent identity directory keeps the self-signed default.
+Stage authorized material through a reviewed private provisioning process,
+never terminal output, shared storage or a repository. Android backup excludes
+this data. This loader does not obtain credentials, unwrap Widevine keys, import
+precomputed signature bundles or validate Google's trust chain. Validate trust
+and a real sender separately. The 0.1.8 build is host-tested but not yet deployed
+or hardware-qualified; the last hardware-qualified prototype remains 0.1.7.
+
 Requirements: user Rust with `armv7-linux-androideabi` and
 `aarch64-linux-android` targets, SDK 36, NDK 27+, JDK 21, Gradle 9.2.1.
 Set `ANDROID_HOME`, `ANDROID_NDK_HOME`, `JAVA_HOME` and optionally `GRADLE`.

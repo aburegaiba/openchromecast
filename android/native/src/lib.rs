@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 mod device_info;
+mod identity_config;
 #[cfg(test)]
 mod protocol_tests;
 
@@ -73,17 +74,17 @@ pub extern "system" fn Java_org_openchromecast_receiver_NativeBridge_start(
     device_id: JString,
     name: JString,
     initial_volume: jfloat,
-    data_dir: JString,
+    private_dir: JString,
 ) -> jstring {
     let result = (|| -> anyhow::Result<()> {
         let device_id: String = env.get_string(&device_id)?.into();
         let name: String = env.get_string(&name)?.into();
-        let data_dir: String = env.get_string(&data_dir)?.into();
+        let private_dir: String = env.get_string(&private_dir)?.into();
         start(
             port,
             device_info::DeviceInfo::new(&device_id, name)?,
             initial_volume,
-            std::path::PathBuf::from(data_dir),
+            std::path::PathBuf::from(private_dir),
         )
     })();
     response(
@@ -96,7 +97,7 @@ fn start(
     port: jint,
     info: device_info::DeviceInfo,
     initial_volume: f32,
-    data_dir: std::path::PathBuf,
+    private_dir: std::path::PathBuf,
 ) -> anyhow::Result<()> {
     anyhow::ensure!((1024..=65535).contains(&port), "invalid port");
     anyhow::ensure!(
@@ -128,15 +129,17 @@ fn start(
                     // Bind before announcing readiness. Port conflicts are real startup errors.
                     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port as u16)).await?;
                     let metadata = tokio::net::TcpListener::bind(("0.0.0.0", device_info::HTTP_PORT)).await?;
-                    let identity =
-                        tokio::task::spawn_blocking(crypto::Identity::generate).await??;
+                    let identity_root = private_dir.clone();
+                    let identity = tokio::task::spawn_blocking(move || {
+                        identity_config::load(&identity_root)
+                    }).await??;
                     let state = Arc::new(tokio::sync::Mutex::new(state::AppState {
                             volume: initial_volume,
                             ..Default::default()
                         }));
                     let player = worker_bridge.spawn();
                     let mut context = vibecast_sdk::ReceiverContext::new(
-                        &info.name, "OpenChromecast Android", info.id.to_string(), data_dir);
+                        &info.name, "OpenChromecast Android", info.id.to_string(), private_dir.join("youtube"));
                     context.capabilities.video_codecs = vec!["h264".into()];
                     context.capabilities.max_resolution = vibecast_sdk::Resolution::new(1280, 720);
                     let host = youtube::Host::new(context, state.clone(), worker_bridge.clone(), player.clone())?;

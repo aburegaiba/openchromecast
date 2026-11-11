@@ -111,10 +111,12 @@ public final class ReceiverService extends Service {
         };
         connectivity.registerDefaultNetworkCallback(networkCallback);
         try {
-            File youtube = new File(getNoBackupFilesDir(), "youtube");
+            File privateDirectory = getNoBackupFilesDir();
+            android.system.Os.chmod(privateDirectory.getAbsolutePath(), 0700);
+            File youtube = new File(privateDirectory, "youtube");
             if (!youtube.isDirectory() && !youtube.mkdir()) { fail("Dossier YouTube indisponible"); return; }
             android.system.Os.chmod(youtube.getAbsolutePath(), 0700);
-            String error = NativeBridge.start(PORT, deviceId, receiverName, volume, youtube.getAbsolutePath());
+            String error = NativeBridge.start(PORT, deviceId, receiverName, volume, privateDirectory.getAbsolutePath());
             if (!error.isEmpty()) { fail(error); return; }
         } catch (android.system.ErrnoException error) { fail("Dossier YouTube non protege"); return; }
         catch (LinkageError error) { fail("Bibliotheque native incompatible"); return; }

@@ -933,6 +933,7 @@ dependencies = [
  "async-trait",
  "axum",
  "jni",
+ "libc",
  "prost 0.13.5",
  "rcgen",
  "reqwest",
