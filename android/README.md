@@ -147,8 +147,14 @@ static subnet list. Missing/invalid updates revoke old prefixes, and late events
 for a previous default network are ignored. This is an application accept policy,
 not a kernel packet firewall: TCP handshakes can still complete before rejection.
 It neither supplies Google credentials nor changes the router's firewall. Host
-tests cover both address families and deny-before-protocol behavior; Android
-hardware qualification of this version is pending.
+tests cover both address families and deny-before-protocol behavior. On Android
+11 hardware, metadata and pinned public device-auth passed over IPv4, both global
+IPv6 addresses and scoped link-local IPv6. Nonexistent paths and write methods
+still returned 404/405. mDNS exposed the same UUID on one IPv4 and three IPv6
+addresses. Denial of non-local peers and network-transition ordering were tested
+on the host, not from an Internet client or by changing the device's Wi-Fi.
+No media, reboot or restore recipe was repeated for this version. Google's root
+trust still fails for the generated identity; this is not phone acceptance.
 
 The 0.1.2 prototype also passed a real Android 11 reboot with automatic start
 enabled: the receiver resumed as a foreground service without opening its UI,
