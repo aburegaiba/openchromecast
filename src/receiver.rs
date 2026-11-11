@@ -41,7 +41,16 @@ pub async fn handle(
             let app_ids = app_ids_from(&payload);
             let availability: Value = app_ids
                 .iter()
-                .map(|a| (a.as_str(), if supports_app(a, cfg!(target_os = "android")) { "APP_AVAILABLE" } else { "APP_UNAVAILABLE" }))
+                .map(|a| {
+                    (
+                        a.as_str(),
+                        if available(a, shared) {
+                            "APP_AVAILABLE"
+                        } else {
+                            "APP_UNAVAILABLE"
+                        },
+                    )
+                })
                 .collect();
             info!("app availability requested: {app_ids:?}");
             send_json(
@@ -59,20 +68,34 @@ pub async fn handle(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            if !supports_app(&app_id, cfg!(target_os = "android")) {
-                send_json(tx, "receiver-0", &msg.source_id, NS_RECEIVER,
-                    &json!({"type":"LAUNCH_ERROR", "requestId":rid, "reason":"NOT_FOUND"})).await?;
+            if !available(&app_id, shared) {
+                send_json(
+                    tx,
+                    "receiver-0",
+                    &msg.source_id,
+                    NS_RECEIVER,
+                    &json!({"type":"LAUNCH_ERROR", "requestId":rid, "reason":"NOT_FOUND"}),
+                )
+                .await?;
                 return Ok(());
             }
             let session = {
                 let mut st = shared.state.lock().await;
-                st.media_session_counter += 1;
-                let session = Session::new(app_id.clone(), st.media_session_counter);
-                // A fresh session starts with no bound connections.
-                st.session_connections.clear();
-                st.session = Some(session.clone());
-                session
+                if app_id == "233637DE" && st.session.as_ref().is_some_and(|s| s.app_id == app_id) {
+                    st.session.clone().unwrap()
+                } else {
+                    st.media_session_counter += 1;
+                    let session = Session::new(app_id.clone(), st.media_session_counter);
+                    // A fresh session starts with no bound connections.
+                    st.session_connections.clear();
+                    st.session = Some(session.clone());
+                    session
+                }
             };
+            #[cfg(feature = "embedded-player")]
+            if let Some(host) = &shared.youtube {
+                host.launch(&session).await?;
+            }
             info!("launched app '{app_id}' session {}", session.id);
             let st = shared.state.lock().await;
             let status = receiver_status(&st);
@@ -87,6 +110,10 @@ pub async fn handle(
         }
         "STOP" => {
             info!("stopping current app");
+            #[cfg(feature = "embedded-player")]
+            if let Some(host) = &shared.youtube {
+                host.stop().await;
+            }
             let _ = shared.player.stop().await;
             let mut st = shared.state.lock().await;
             st.session = None;
@@ -140,6 +167,15 @@ fn supports_app(app_id: &str, embedded: bool) -> bool {
     !embedded || app_id == "CC1AD845"
 }
 
+fn available(app_id: &str, shared: &Shared) -> bool {
+    #[cfg(feature = "embedded-player")]
+    if app_id == "233637DE" {
+        return shared.youtube.is_some();
+    }
+    let _ = shared;
+    supports_app(app_id, cfg!(feature = "embedded-player"))
+}
+
 fn app_ids_from(payload: &Value) -> Vec<String> {
     if let Some(s) = payload.get("appId").and_then(|v| v.as_str()) {
         vec![s.to_string()]
@@ -182,7 +218,7 @@ fn receiver_status(state: &AppState) -> Value {
 }
 
 impl Session {
-    fn new(app_id: String, media_session_id: u32) -> Self {
+    pub(crate) fn new(app_id: String, media_session_id: u32) -> Self {
         let id = Uuid::new_v4().simple().to_string();
         let (display_name, namespaces) = namespaces_for(&app_id);
         Session {
@@ -205,7 +241,9 @@ impl Session {
 /// Known receiver apps and the namespaces they announce.
 fn namespaces_for(app_id: &str) -> (String, Vec<String>) {
     match app_id {
-        "YouTube" | "youtube" => ("YouTube".into(), vec![NS_MEDIA.into(), NS_YOUTUBE.into()]),
+        "233637DE" | "YouTube" | "youtube" => {
+            ("YouTube".into(), vec![NS_MEDIA.into(), NS_YOUTUBE.into()])
+        }
         "CC1AD845" => ("Default Media Receiver".into(), vec![NS_MEDIA.into()]),
         _ => (app_id.to_string(), vec![NS_MEDIA.into(), NS_YOUTUBE.into()]),
     }

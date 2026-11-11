@@ -16,10 +16,15 @@ name = "cast-sniff"
 path = "src/bin/sniff.rs"
 
 [features]
-embedded-player = []
+embedded-player = ["dep:async-trait", "dep:reqwest", "dep:roxmltree", "dep:vibecast-apps-youtube", "dep:vibecast-sdk"]
 
 [dependencies]
 anyhow = "1"
+async-trait = { version = "0.1", optional = true }
+roxmltree = { version = "0.21", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip", "cookies"], optional = true }
+vibecast-apps-youtube = { git = "https://github.com/emilsvennesson/vibecast", rev = "4cde20b3f49b296debec8cb9a2badb51c7bae940", optional = true }
+vibecast-sdk = { git = "https://github.com/emilsvennesson/vibecast", rev = "4cde20b3f49b296debec8cb9a2badb51c7bae940", optional = true }
 clap = { version = "4", features = ["derive"] }
 local-ip-address = "0.6"
 fs4 = "0.9"

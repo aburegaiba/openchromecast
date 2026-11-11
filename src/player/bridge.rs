@@ -22,6 +22,22 @@ pub struct Bridge {
 }
 
 impl Bridge {
+    pub fn load_resolved(&self, mut event: Value) -> Result<()> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if event["type"] != "load" || state.events.len() >= MAX_EVENTS {
+            bail!("invalid or full native load queue");
+        }
+        state.generation += 1;
+        state.snapshot = PlayerSnapshot {
+            state: PlayerState::Buffering,
+            ..state.snapshot.clone()
+        };
+        state.snapshot.end_error = false;
+        event["generation"] = json!(state.generation);
+        state.events.push_back(event);
+        Ok(())
+    }
+
     pub fn event(&self, event: Value) -> Result<()> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.events.len() >= MAX_EVENTS {
@@ -183,5 +199,27 @@ mod tests {
         let bridge = Bridge::default();
         bridge.command(PlayerCommand::SetVolume(8.0)).unwrap();
         assert_eq!(bridge.poll()[0]["volume"], 1.0);
+    }
+
+    #[test]
+    fn resolved_loads_use_the_same_generation_guard_as_standard_loads() {
+        let bridge = Bridge::default();
+        bridge
+            .load_resolved(json!({"type":"load", "manifest":"<MPD/>"}))
+            .unwrap();
+        let generation = bridge.poll()[0]["generation"].as_u64().unwrap();
+        bridge.command(PlayerCommand::Stop).unwrap();
+        bridge.update(
+            generation,
+            PlayerSnapshot {
+                state: PlayerState::Playing,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            bridge.state.lock().unwrap().snapshot.state,
+            PlayerState::Idle
+        );
+        assert!(bridge.load_resolved(json!({"type":"not_load"})).is_err());
     }
 }

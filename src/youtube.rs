@@ -5,12 +5,39 @@
 //! documented part of the protocol and is still being reverse-engineered:
 //! unknown message types are logged verbatim so captures can be analyzed.
 
-use crate::server::{MessageSink, NS_YOUTUBE, Shared, payload_json, send_json};
+#[cfg(feature = "embedded-player")]
+#[path = "../android/native/src/youtube_host.rs"]
+mod native;
+#[cfg(feature = "embedded-player")]
+pub use native::Host;
+
+use crate::server::{MessageSink, Shared};
+#[cfg(not(feature = "embedded-player"))]
+use crate::server::{NS_YOUTUBE, payload_json, send_json};
 use anyhow::Result;
+#[cfg(not(feature = "embedded-player"))]
 use serde_json::json;
+#[cfg(not(feature = "embedded-player"))]
 use tracing::{info, warn};
 
 pub async fn handle(
+    msg: &crate::proto::cast_channel::CastMessage,
+    tx: &MessageSink,
+    shared: &Shared,
+) -> Result<()> {
+    #[cfg(feature = "embedded-player")]
+    {
+        if let Some(host) = &shared.youtube {
+            host.handle_mdx(msg, tx).await?;
+        }
+        Ok(())
+    }
+    #[cfg(not(feature = "embedded-player"))]
+    legacy_handle(msg, tx, shared).await
+}
+
+#[cfg(not(feature = "embedded-player"))]
+async fn legacy_handle(
     msg: &crate::proto::cast_channel::CastMessage,
     tx: &MessageSink,
     shared: &Shared,

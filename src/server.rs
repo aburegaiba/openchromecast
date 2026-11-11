@@ -40,6 +40,8 @@ pub struct Shared {
     pub state: Arc<Mutex<AppState>>,
     pub identity: Arc<Identity>,
     pub player: PlayerHandle,
+    #[cfg(feature = "embedded-player")]
+    pub youtube: Option<Arc<youtube::Host>>,
 }
 
 /// Accept loop: spawn one task per incoming connection.
@@ -116,6 +118,10 @@ async fn handle_connection(tcp: TcpStream, peer: SocketAddr, shared: Shared) -> 
         }
     }
 
+    #[cfg(feature = "embedded-player")]
+    if let Some(host) = &shared.youtube {
+        host.disconnect(&tx).await;
+    }
     drop(tx);
     let _ = writer.await;
 
@@ -136,7 +142,16 @@ async fn handle_connection(tcp: TcpStream, peer: SocketAddr, shared: Shared) -> 
             if st.session.as_ref().is_some_and(|s| s.id == *t)
                 && st.session_connections.get(t).copied().unwrap_or(0) == 0
             {
-                do_teardown = true;
+                // Lounge continues independently when the Cast transport closes.
+                #[cfg(feature = "embedded-player")]
+                {
+                    do_teardown = shared.youtube.is_none()
+                        || st.session.as_ref().is_none_or(|s| s.app_id != "233637DE");
+                }
+                #[cfg(not(feature = "embedded-player"))]
+                {
+                    do_teardown = true;
+                }
             }
         }
         if do_teardown {
@@ -238,7 +253,15 @@ async fn dispatch(msg: &CastMessage, tx: &MessageSink, shared: &Shared) -> Resul
         NS_CONNECTION => handle_connection_ns(msg).await,
         NS_HEARTBEAT => handle_heartbeat(msg, tx).await,
         NS_RECEIVER => receiver::handle(msg, tx, shared).await,
-        NS_MEDIA => media::handle(msg, tx, shared).await,
+        NS_MEDIA => {
+            #[cfg(feature = "embedded-player")]
+            if let Some(host) = &shared.youtube
+                && host.handle_load(msg, tx, shared).await?
+            {
+                return Ok(());
+            }
+            media::handle(msg, tx, shared).await
+        }
         NS_YOUTUBE => youtube::handle(msg, tx, shared).await,
         other => {
             warn!("unhandled namespace: {other}");

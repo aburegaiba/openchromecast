@@ -8,6 +8,9 @@ discovery. This is a prototype, not a Google-certified Chromecast.
 
 - Default Media Receiver (`CC1AD845`), HTTP/HTTPS media, play/pause/seek/stop,
   software volume/mute, and status from the real player.
+- Native YouTube app (`233637DE`) through the pinned MIT Vibecast provider:
+  MDX/Lounge and public video resolution, rendered by Media3. See
+  [the integration and its boundaries](YOUTUBE.md). No separate server is needed.
 - Audio stays in a foreground service while another app remains visible.
 - The return button supports Home Assistant's regular and Minimal packages.
 - Video opens from the receiver screen or its notification. No overlay,
@@ -19,8 +22,9 @@ discovery. This is a prototype, not a Google-certified Chromecast.
   compatible discovery clients to identify the receiver without claiming
   Google certification. The Cast listener remains on TCP 8009.
 - Self-signed device authentication is unchanged. Google SDK applications may
-  reject it even when discovery and Home Assistant control work. No YouTube,
-  Netflix/DRM, screen mirroring, multiroom or universal sender support claim.
+  reject it even when discovery and Home Assistant control work. No official
+  YouTube phone acceptance, Netflix/DRM, screen mirroring, multiroom or universal
+  sender support claim.
 - Optional automatic boot resume, disabled by default. It resumes only after
   the switch is enabled and the receiver has been explicitly started; stopping
   from the screen or notification prevents the next resume. The boot receiver

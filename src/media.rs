@@ -427,9 +427,16 @@ async fn handle_load(
 
 /// Build the current `MEDIA_STATUS.status` object (if a session is active).
 async fn media_status(shared: &Shared) -> Option<Value> {
-    let st = shared.state.lock().await;
+    player_status(&shared.player, &shared.state).await
+}
+
+pub(crate) async fn player_status(
+    player: &crate::player::PlayerHandle,
+    state: &tokio::sync::Mutex<crate::state::AppState>,
+) -> Option<Value> {
+    let st = state.lock().await;
     let session = st.session.as_ref()?;
-    let snap = shared.player.snapshot().await;
+    let snap = player.snapshot().await;
     #[cfg(feature = "embedded-player")]
     let stopped = session.media.is_none();
     #[cfg(not(feature = "embedded-player"))]
@@ -488,18 +495,15 @@ async fn media_status(shared: &Shared) -> Option<Value> {
     }
     if stopped {
         status["idleReason"] = json!("CANCELLED");
+    } else if snap.end_error && matches!(snap.state, PlayerState::Ended | PlayerState::Idle) {
+        status["idleReason"] = json!("ERROR");
     } else if snap.state == PlayerState::Ended {
         status["idleReason"] = json!("FINISHED");
-    } else if snap.state == PlayerState::Idle && snap.end_error {
-        // The stream died because the sender switched profiles. That is an
-        // error, not a finished track: reporting FINISHED here is what makes
-        // VLC retry LOAD in a loop.
-        status["idleReason"] = json!("ERROR");
     }
     Some(status)
 }
 
-async fn respond_media_status(
+pub(crate) async fn respond_media_status(
     tx: &MessageSink,
     msg: &crate::proto::cast_channel::CastMessage,
     shared: &Shared,

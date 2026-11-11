@@ -201,6 +201,8 @@ pub(crate) async fn run_receiver(cli: config::Cli, shutdown: Arc<Notify>) -> Res
         state: Arc::new(Mutex::new(state::AppState::default())),
         identity: Arc::new(identity),
         player,
+        #[cfg(feature = "embedded-player")]
+        youtube: None,
     };
 
     // --- Cast V2 TLS listener ---

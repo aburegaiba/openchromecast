@@ -13,6 +13,7 @@ import androidx.media3.common.*;
 import androidx.media3.exoplayer.ExoPlayer;
 import org.json.*;
 import java.util.UUID;
+import java.io.File;
 
 public final class ReceiverService extends Service {
     private static final String CHANNEL = "cast_receiver";
@@ -108,9 +109,13 @@ public final class ReceiverService extends Service {
         };
         connectivity.registerDefaultNetworkCallback(networkCallback);
         try {
-            String error = NativeBridge.start(PORT, deviceId, receiverName, volume);
+            File youtube = new File(getNoBackupFilesDir(), "youtube");
+            if (!youtube.isDirectory() && !youtube.mkdir()) { fail("Dossier YouTube indisponible"); return; }
+            android.system.Os.chmod(youtube.getAbsolutePath(), 0700);
+            String error = NativeBridge.start(PORT, deviceId, receiverName, volume, youtube.getAbsolutePath());
             if (!error.isEmpty()) { fail(error); return; }
-        } catch (LinkageError error) { fail("Bibliotheque native incompatible"); return; }
+        } catch (android.system.ErrnoException error) { fail("Dossier YouTube non protege"); return; }
+        catch (LinkageError error) { fail("Bibliotheque native incompatible"); return; }
         handler.post(pump);
     }
 
@@ -137,6 +142,7 @@ public final class ReceiverService extends Service {
         }
     };
 
+    @androidx.annotation.OptIn(markerClass = androidx.media3.common.util.UnstableApi.class)
     private void command(JSONObject event) throws JSONException {
         if (destroying) return;
         String kind = event.getString("type");
@@ -146,14 +152,14 @@ public final class ReceiverService extends Service {
         generation = event.optLong("generation", generation);
         switch (kind) {
             case "load":
-                String url = event.getString("url");
-                if (!MediaPolicy.accepts(url)) {
+                try {
+                    player.setMediaSource(NativeMediaSource.create(this, event));
+                } catch (IllegalArgumentException error) {
                     stopMedia(); playbackError = true;
-                    summary = "Adresse multimedia refusee"; notifyState(); return;
+                    summary = "Source multimedia refusee"; notifyState(); publish(); return;
                 }
                 playbackError = false;
                 video = event.optBoolean("video", false);
-                player.setMediaItem(MediaItem.fromUri(url));
                 player.seekTo(Math.max(0, (long)(event.optDouble("position", 0) * 1000)));
                 player.setPlayWhenReady(event.optBoolean("autoplay", true));
                 player.prepare();
@@ -169,6 +175,9 @@ public final class ReceiverService extends Service {
             case "pause": player.pause(); break;
             case "seek": player.seekTo(Math.max(0, (long)(event.optDouble("position", 0) * 1000))); break;
             case "stop": stopMedia(); break;
+            case "playback_error":
+                stopMedia(); playbackError = true;
+                summary = "Source multimedia non prise en charge"; notifyState(); publish(); break;
             case "volume": volume = (float)Math.max(0, Math.min(1, event.optDouble("volume", volume))); applyVolume(); break;
             case "mute": muted = event.optBoolean("muted", false); applyVolume(); break;
             default: break;

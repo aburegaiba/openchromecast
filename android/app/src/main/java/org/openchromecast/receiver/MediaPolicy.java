@@ -4,6 +4,15 @@ import java.net.URI;
 import java.net.URISyntaxException;
 
 final class MediaPolicy {
+    static boolean acceptsManifest(String mime, String manifest) {
+        return "application/dash+xml".equals(mime) && manifest != null && !manifest.isEmpty()
+            && manifest.getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= 1024 * 1024;
+    }
+    static boolean acceptsHeader(String name, String value) {
+        return name != null && value != null && name.length() <= 128 && value.length() <= 8192
+            && name.matches("[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+            && value.indexOf('\r') < 0 && value.indexOf('\n') < 0;
+    }
     static boolean acceptsName(String name) {
         return name != null && !name.trim().isEmpty()
             && name.getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= 63

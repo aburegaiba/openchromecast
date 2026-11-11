@@ -73,14 +73,17 @@ pub extern "system" fn Java_org_openchromecast_receiver_NativeBridge_start(
     device_id: JString,
     name: JString,
     initial_volume: jfloat,
+    data_dir: JString,
 ) -> jstring {
     let result = (|| -> anyhow::Result<()> {
         let device_id: String = env.get_string(&device_id)?.into();
         let name: String = env.get_string(&name)?.into();
+        let data_dir: String = env.get_string(&data_dir)?.into();
         start(
             port,
             device_info::DeviceInfo::new(&device_id, name)?,
             initial_volume,
+            std::path::PathBuf::from(data_dir),
         )
     })();
     response(
@@ -89,7 +92,12 @@ pub extern "system" fn Java_org_openchromecast_receiver_NativeBridge_start(
     )
 }
 
-fn start(port: jint, info: device_info::DeviceInfo, initial_volume: f32) -> anyhow::Result<()> {
+fn start(
+    port: jint,
+    info: device_info::DeviceInfo,
+    initial_volume: f32,
+    data_dir: std::path::PathBuf,
+) -> anyhow::Result<()> {
     anyhow::ensure!((1024..=65535).contains(&port), "invalid port");
     anyhow::ensure!(
         initial_volume.is_finite() && (0.0..=1.0).contains(&initial_volume),
@@ -122,20 +130,30 @@ fn start(port: jint, info: device_info::DeviceInfo, initial_volume: f32) -> anyh
                     let metadata = tokio::net::TcpListener::bind(("0.0.0.0", device_info::HTTP_PORT)).await?;
                     let identity =
                         tokio::task::spawn_blocking(crypto::Identity::generate).await??;
-                    let shared = server::Shared {
-                        state: Arc::new(tokio::sync::Mutex::new(state::AppState {
+                    let state = Arc::new(tokio::sync::Mutex::new(state::AppState {
                             volume: initial_volume,
                             ..Default::default()
-                        })),
+                        }));
+                    let player = worker_bridge.spawn();
+                    let mut context = vibecast_sdk::ReceiverContext::new(
+                        &info.name, "OpenChromecast Android", info.id.to_string(), data_dir);
+                    context.capabilities.video_codecs = vec!["h264".into()];
+                    context.capabilities.max_resolution = vibecast_sdk::Resolution::new(1280, 720);
+                    let host = youtube::Host::new(context, state.clone(), worker_bridge.clone(), player.clone())?;
+                    let shared = server::Shared {
+                        state,
                         identity: Arc::new(identity),
-                        player: worker_bridge.spawn(),
+                        player,
+                        youtube: Some(host.clone()),
                     };
                     worker_bridge.event(json!({"type":"ready"}))?;
-                    tokio::select! {
+                    let result = tokio::select! {
                         result = server::run(listener, shared) => result,
                         result = axum::serve(metadata, device_info::router(info)) => result.map_err(Into::into),
                         _ = worker_shutdown.notified() => Ok(()),
-                    }
+                    };
+                    host.stop().await;
+                    result
                 })
             };
             if let Err(error) = run() {
@@ -164,7 +182,7 @@ mod startup_tests {
             let info =
                 device_info::DeviceInfo::new("e8d8571a824a45df88929e1c220f602d", "Receiver".into())
                     .unwrap();
-            assert!(start(8009, info, volume).is_err());
+            assert!(start(8009, info, volume, std::path::PathBuf::from("unused")).is_err());
         }
     }
 }

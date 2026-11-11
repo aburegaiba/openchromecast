@@ -8,8 +8,8 @@ pub const HTTP_PORT: u16 = 8008;
 
 #[derive(Clone)]
 pub struct DeviceInfo {
-    id: Uuid,
-    name: String,
+    pub(super) id: Uuid,
+    pub(super) name: String,
 }
 
 impl DeviceInfo {

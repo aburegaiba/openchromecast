@@ -82,6 +82,7 @@ async fn client_with_identity(
         state: Arc::new(tokio::sync::Mutex::new(state::AppState::default())),
         identity: Arc::new(identity),
         player: bridge.spawn(),
+        youtube: None,
     };
     let task = tokio::spawn(async move {
         let _ = server::run(listener, shared).await;

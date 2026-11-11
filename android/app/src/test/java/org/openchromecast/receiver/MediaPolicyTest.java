@@ -3,6 +3,18 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class MediaPolicyTest {
+    @Test public void acceptsOnlyBoundedNativeDashManifests() {
+        assertTrue(MediaPolicy.acceptsManifest("application/dash+xml", "<MPD/>"));
+        assertFalse(MediaPolicy.acceptsManifest("text/html", "<MPD/>"));
+        assertFalse(MediaPolicy.acceptsManifest("application/dash+xml", ""));
+        assertFalse(MediaPolicy.acceptsManifest("application/dash+xml", "x".repeat(1024 * 1024 + 1)));
+    }
+    @Test public void refusesHeaderInjection() {
+        assertTrue(MediaPolicy.acceptsHeader("User-Agent", "Synthetic"));
+        assertFalse(MediaPolicy.acceptsHeader("User Agent", "Synthetic"));
+        assertFalse(MediaPolicy.acceptsHeader("User-Agent", "bad\r\nCookie: injected"));
+        assertFalse(MediaPolicy.acceptsHeader("User-Agent", "x".repeat(8193)));
+    }
     @Test public void validatesUtf8DiscoveryName() {
         assertTrue(MediaPolicy.acceptsName("Receiver"));
         assertFalse(MediaPolicy.acceptsName(" "));
