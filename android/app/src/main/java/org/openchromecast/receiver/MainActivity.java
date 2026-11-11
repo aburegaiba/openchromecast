@@ -3,14 +3,19 @@ package org.openchromecast.receiver;
 import android.Manifest;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.net.Uri;
 import android.os.*;
+import android.provider.Settings;
 import android.view.*;
 import android.widget.*;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import com.google.android.material.appbar.MaterialToolbar;
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.textfield.*;
 import com.google.android.material.materialswitch.MaterialSwitch;
+import com.google.android.material.snackbar.Snackbar;
 
 public final class MainActivity extends AppCompatActivity {
     static boolean visible;
@@ -18,6 +23,14 @@ public final class MainActivity extends AppCompatActivity {
     private TextView state;
     private MaterialButton start, stop;
     private TextInputEditText name;
+    private SharedPreferences settings;
+    private MaterialSwitch automaticVideo;
+    private final ActivityResultLauncher<Intent> videoPermission = registerForActivityResult(
+        new ActivityResultContracts.StartActivityForResult(), result -> {
+            boolean allowed = Settings.canDrawOverlays(this);
+            settings.edit().putBoolean(VideoPresentationPolicy.AUTOMATIC_VIDEO, allowed).apply();
+            automaticVideo.setChecked(allowed);
+        });
     private final Runnable refresh = new Runnable() {
         @Override public void run() {
             String next = ReceiverService.summary;
@@ -45,7 +58,7 @@ public final class MainActivity extends AppCompatActivity {
         name.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(48)});
         name.setText(getSharedPreferences("receiver", MODE_PRIVATE).getString("name", "OpenChromecast Android"));
         field.addView(name); panel.addView(field, spaced());
-        SharedPreferences settings = getSharedPreferences(ReceiverStartupPolicy.PREFERENCES, MODE_PRIVATE);
+        settings = getSharedPreferences(ReceiverStartupPolicy.PREFERENCES, MODE_PRIVATE);
         MaterialSwitch automatic = new MaterialSwitch(this);
         automatic.setText(R.string.automatic_start);
         automatic.setMinHeight(dp(48));
@@ -53,6 +66,23 @@ public final class MainActivity extends AppCompatActivity {
         automatic.setOnCheckedChangeListener((view, checked) -> settings.edit()
             .putBoolean(ReceiverStartupPolicy.AUTO_START, checked).apply());
         panel.addView(automatic, spaced());
+        automaticVideo = new MaterialSwitch(this);
+        automaticVideo.setText(R.string.automatic_video);
+        automaticVideo.setMinHeight(dp(48));
+        automaticVideo.setChecked(settings.getBoolean(VideoPresentationPolicy.AUTOMATIC_VIDEO, false)
+            && Settings.canDrawOverlays(this));
+        automaticVideo.setOnCheckedChangeListener((view, checked) -> {
+            if (checked && !Settings.canDrawOverlays(this)) {
+                automaticVideo.setChecked(false);
+                try {
+                    videoPermission.launch(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:" + getPackageName())));
+                } catch (android.content.ActivityNotFoundException | SecurityException error) {
+                    Snackbar.make(automaticVideo, R.string.video_permission_unavailable, Snackbar.LENGTH_LONG).show();
+                }
+            } else settings.edit().putBoolean(VideoPresentationPolicy.AUTOMATIC_VIDEO, checked).apply();
+        });
+        panel.addView(automaticVideo, spaced());
         start = button("Demarrer", android.R.drawable.ic_media_play);
         start.setOnClickListener(view -> {
             String value = name.getText() == null ? "" : name.getText().toString().trim();
@@ -82,7 +112,7 @@ public final class MainActivity extends AppCompatActivity {
             if (companion != null) startActivity(companion); else finish();
         });
         panel.addView(home, spaced());
-        scroll.addView(panel); root.addView(scroll, new LinearLayout.LayoutParams(-1, -1)); setContentView(root);
+        scroll.addView(panel); root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f)); setContentView(root);
     }
     private MaterialButton button(String text, int icon) {
         MaterialButton button = new MaterialButton(this);
@@ -94,6 +124,11 @@ public final class MainActivity extends AppCompatActivity {
         params.bottomMargin = dp(12); return params;
     }
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
-    @Override protected void onResume() { super.onResume(); visible = true; handler.post(refresh); }
+    @Override protected void onResume() {
+        super.onResume(); visible = true;
+        automaticVideo.setChecked(settings.getBoolean(VideoPresentationPolicy.AUTOMATIC_VIDEO, false)
+            && Settings.canDrawOverlays(this));
+        handler.post(refresh);
+    }
     @Override protected void onPause() { visible = false; handler.removeCallbacks(refresh); super.onPause(); }
 }

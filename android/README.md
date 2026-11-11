@@ -13,8 +13,12 @@ discovery. This is a prototype, not a Google-certified Chromecast.
   [the integration and its boundaries](YOUTUBE.md). No separate server is needed.
 - Audio stays in a foreground service while another app remains visible.
 - The return button supports Home Assistant's regular and Minimal packages.
-- Video opens from the receiver screen or its notification. No overlay,
-  accessibility, microphone, storage, root or Google account permission.
+- Video opens from the receiver screen or its notification. Optional automatic
+  video presentation is disabled by default and requires Android's special
+  display-over-other-apps permission, granted through system settings. No
+  overlay window is drawn. The private player activity has its own task;
+  STOP, end and player errors remove it and reveal the previous application.
+  No accessibility, microphone, storage, root or Google account permission.
 - Stable discovery UUID in app-private preferences, no shared device identity.
 - Read-only device metadata on LAN TCP 8008 at `/setup/eureka_info`, sharing
   the NSD name and UUID. Other paths return 404 and write methods return 405;
@@ -71,9 +75,14 @@ Review the APK signing certificate with the SDK's `apksigner` before applying.
    identity, then test Cast GET_STATUS using a compatible sender.
 3. Test a non-private audio file at an agreed low volume. Verify real position,
    pause/resume/seek/stop, not just a success response. Ask for audible result.
-4. Test video from the notification and return to the prior app; separately
-   verify a real phone Cast picker. A self-signed rejection is a known limit,
-   not a reason to import another application's device credentials.
+4. Test video from the notification and return to the prior app. For a kiosk,
+   explicitly enable automatic video and grant the native Android permission,
+   then put the dashboard in front. Verify video takeover without an ADB/UI
+   launch, STOP/end/error returning to that task, audio leaving it visible,
+   and disabled/revoked permission falling back to the notification. Back must
+   not cause the same media to repeatedly reopen. Separately verify a real
+   phone Cast picker. A self-signed rejection is a known limit, not a reason to
+   import another application's device credentials.
 5. Stop from the UI or notification. Service destruction withdraws discovery,
    releases player/network resources and stops Rust. Restart the previous
    receiver if it had been stopped. Do not uninstall or clear data implicitly.
@@ -85,7 +94,9 @@ Review the APK signing certificate with the SDK's `apksigner` before applying.
 The idle service uses the `connectedDevice` foreground type. It does not launch
 a `mediaPlayback` service directly from `BOOT_COMPLETED`; this matters on
 Android 15 and later. Versions other than the tested Echo Android 11 remain
-unqualified. No overlay or background-activity privilege is requested.
+unqualified. Automatic video is a separate opt-in and never runs from the
+boot receiver. Disable its switch and revoke the special permission in Android
+settings to return to notification-only background video.
 
 ### Android 11 hardware check
 
@@ -126,3 +137,17 @@ and resumed the foreground receiver while Companion remained visible. Wait
 for the actual service and listeners, not just the process PID, before checking
 boot acceptance. Device-auth nonce/signature passed again, but the Google Cast
 root trust check still failed as expected for the generated self-signed identity.
+
+The 0.1.7 prototype was checked on the same Android 11 hardware with automatic
+video explicitly enabled through the native permission screen. Audio left the
+dashboard visible. Synthetic video opened without a launcher command, rendered
+changing pixels, and returned to the dashboard on STOP, natural end and player
+error. Back hid the player without interrupting playback or reopening it.
+Disabled automatic video and revoked permission both prevented takeover.
+Native YouTube Lounge playback also opened the video task; Home Assistant
+pause/play/stop/turn-off commands were independently confirmed, including a
+return to the same dashboard task. All tests used zero system/software volume.
+The control surface was checked at normal and enlarged font size; settings
+were restored. Other hardware, a fresh reboot of this version, restoration and
+official Google phone acceptance remain unqualified. Public device-auth still
+passes its nonce/signature checks but fails the Google trust-chain check.

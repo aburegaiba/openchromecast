@@ -19,7 +19,13 @@ public final class VideoActivity extends AppCompatActivity {
         }
         view = new PlayerView(this); view.setPlayer(service.player); setContentView(view);
     }
-    static void closeIfOpen() { if (opened != null) opened.finish(); }
+    static boolean isOpen() { return opened != null && !opened.isFinishing(); }
+    static void closeIfOpen() {
+        if (opened != null) {
+            if (opened.isTaskRoot()) opened.finishAndRemoveTask();
+            else opened.finish();
+        }
+    }
     @Override protected void onDestroy() {
         if (view != null) view.setPlayer(null);
         if (opened == this) opened = null;

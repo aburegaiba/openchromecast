@@ -23,3 +23,6 @@ need explicit approval. No DRM or complete Cast compatibility claim.
 Local network; explicit start/stop and Android notification. No server-side
 media relay, account credentials, root or microphone. Optional boot resume is
 explicitly enabled in receiver settings; it never opens another screen.
+Optional automatic video presentation uses Android's special display
+permission, granted through system settings. It does not draw overlay windows.
+The player task closes on STOP/end/error, revealing the previous application.

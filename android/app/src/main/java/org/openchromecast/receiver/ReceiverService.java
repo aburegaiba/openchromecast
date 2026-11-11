@@ -9,6 +9,7 @@ import android.net.*;
 import android.net.nsd.*;
 import android.net.wifi.WifiManager;
 import android.os.*;
+import android.provider.Settings;
 import androidx.media3.common.*;
 import androidx.media3.exoplayer.ExoPlayer;
 import org.json.*;
@@ -23,7 +24,7 @@ public final class ReceiverService extends Service {
     final Handler handler = new Handler(Looper.getMainLooper());
     ExoPlayer player;
     boolean video;
-    private boolean destroying, ready, registered, muted, playbackError;
+    private boolean destroying, ready, registered, muted, playbackError, videoPresentationRequested;
     private float volume = 0.15f;
     private long generation;
     private NsdManager nsd;
@@ -59,6 +60,7 @@ public final class ReceiverService extends Service {
             @Override public void onPlayerError(PlaybackException error) {
                 playbackError = true;
                 summary = "Lecture impossible (" + error.getErrorCodeName() + ")";
+                VideoActivity.closeIfOpen();
                 notifyState();
                 publish();
             }
@@ -71,7 +73,7 @@ public final class ReceiverService extends Service {
                 // HLS/DASH content types need not start with video/.
                 if (tracks.isTypeSelected(C.TRACK_TYPE_VIDEO) && !video) {
                     video = true; summary = "Video recue"; notifyState();
-                    if (MainActivity.visible) startActivity(new Intent(ReceiverService.this, VideoActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                    presentVideoIfAllowed();
                 }
             }
         });
@@ -159,16 +161,15 @@ public final class ReceiverService extends Service {
                     summary = "Source multimedia refusee"; notifyState(); publish(); return;
                 }
                 playbackError = false;
+                videoPresentationRequested = false;
                 video = event.optBoolean("video", false);
                 player.seekTo(Math.max(0, (long)(event.optDouble("position", 0) * 1000)));
                 player.setPlayWhenReady(event.optBoolean("autoplay", true));
                 player.prepare();
                 summary = video ? "Video recue" : "Audio recu";
                 foreground(true);
-                if (video) {
-                    // No overlay/accessibility permission. Background video opens from notification.
-                    if (MainActivity.visible) startActivity(new Intent(this, VideoActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-                } else VideoActivity.closeIfOpen();
+                if (video) presentVideoIfAllowed();
+                else VideoActivity.closeIfOpen();
                 notifyState();
                 break;
             case "play": player.play(); break;
@@ -186,10 +187,26 @@ public final class ReceiverService extends Service {
 
     void stopMedia() {
         player.stop(); player.clearMediaItems(); video = false;
+        videoPresentationRequested = false;
         VideoActivity.closeIfOpen();
         summary = "Pret a recevoir";
         foreground(false);
         publish(); notifyState();
+    }
+
+    private void presentVideoIfAllowed() {
+        boolean automatic = getSharedPreferences(ReceiverStartupPolicy.PREFERENCES, MODE_PRIVATE)
+            .getBoolean(VideoPresentationPolicy.AUTOMATIC_VIDEO, false);
+        if (!VideoPresentationPolicy.shouldPresent(video, videoPresentationRequested,
+                MainActivity.visible, automatic, Settings.canDrawOverlays(this))) return;
+        videoPresentationRequested = true;
+        if (VideoActivity.isOpen()) return;
+        try {
+            // A separate task preserves the dashboard task beneath the player.
+            startActivity(new Intent(this, VideoActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        } catch (android.content.ActivityNotFoundException | SecurityException ignored) {
+            notifyState();
+        }
     }
 
     private void applyVolume() { player.setVolume(muted ? 0f : volume); publish(); }
