@@ -35,6 +35,14 @@ use tracing::info;
 /// TLS certs must not have more than 4 days of remaining lifetime to pass
 /// Chromium's `VerifyTLSCertificate` check.
 const TLS_CERT_LIFETIME_DAYS: i64 = 3;
+const TLS_RENEWAL_MARGIN_HOURS: i64 = 24;
+
+struct TlsMaterial {
+    key_der: Vec<u8>,
+    cert_der: Vec<u8>,
+    not_before: OffsetDateTime,
+    not_after: OffsetDateTime,
+}
 
 /// Signing key + certificate material for TLS and Cast device auth.
 pub struct Identity {
@@ -43,10 +51,8 @@ pub struct Identity {
     auth_cert_der: Vec<u8>,
     /// Certificates after the leaf, preserved in the supplied PEM order.
     intermediate_ders: Vec<Vec<u8>>,
-    /// The short-lived TLS certificate (also the signature-binding peer cert).
-    tls_cert_der: Vec<u8>,
-    /// The TLS private key (PKCS#8 DER), served by rustls.
-    tls_key_der: Vec<u8>,
+    tls: TlsMaterial,
+    generated: bool,
 }
 
 impl Identity {
@@ -65,14 +71,18 @@ impl Identity {
     /// Generate one RSA 2048 key + a short-lived self-signed certificate used
     /// for both TLS and device auth.
     pub fn generate() -> Result<Self> {
-        let (key_der, cert_der) = generate_rsa_cert_short_lived("OpenChromecast")?;
-        let signer = rsa_signer(&key_der)?;
+        Self::generate_at(OffsetDateTime::now_utc())
+    }
+
+    fn generate_at(now: OffsetDateTime) -> Result<Self> {
+        let tls = generate_rsa_cert_short_lived("OpenChromecast", now)?;
+        let signer = rsa_signer(&tls.key_der)?;
         Ok(Self {
             signer,
-            auth_cert_der: cert_der.clone(),
+            auth_cert_der: tls.cert_der.clone(),
             intermediate_ders: Vec::new(),
-            tls_cert_der: cert_der,
-            tls_key_der: key_der,
+            tls,
+            generated: true,
         })
     }
 
@@ -114,14 +124,14 @@ impl Identity {
 
         // The real auth cert is long-lived, which would fail the 4-day TLS
         // check — so use a fresh short-lived TLS cert instead.
-        let (tls_key_der, tls_cert_der) = generate_rsa_cert_short_lived("OpenChromecast")?;
+        let tls = generate_rsa_cert_short_lived("OpenChromecast", OffsetDateTime::now_utc())?;
 
         Ok(Self {
             signer: SigningKey::new(key),
             auth_cert_der,
             intermediate_ders,
-            tls_cert_der,
-            tls_key_der,
+            tls,
+            generated: false,
         })
     }
 
@@ -140,14 +150,37 @@ impl Identity {
     }
 
     pub fn tls_cert_der(&self) -> &[u8] {
-        &self.tls_cert_der
+        &self.tls.cert_der
     }
 
     /// The TLS private key in PKCS#8 DER form, for the rustls TLS server.
     pub fn tls_private_key_der(&self) -> Result<PrivateKeyDer<'static>> {
         Ok(PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-            self.tls_key_der.clone(),
+            self.tls.key_der.clone(),
         )))
+    }
+
+    pub fn tls_valid_at(&self, now: OffsetDateTime) -> bool {
+        now >= self.tls.not_before && now < self.tls.not_after
+    }
+
+    pub fn tls_renewal_due_at(&self, now: OffsetDateTime) -> bool {
+        !self.tls_valid_at(now)
+            || now + Duration::hours(TLS_RENEWAL_MARGIN_HOURS) >= self.tls.not_after
+    }
+
+    /// Retained connections keep their old snapshot. A supplied auth key/chain is preserved.
+    pub fn renew_tls_at(&self, now: OffsetDateTime) -> Result<Self> {
+        if self.generated {
+            return Self::generate_at(now);
+        }
+        Ok(Self {
+            signer: self.signer.clone(),
+            auth_cert_der: self.auth_cert_der.clone(),
+            intermediate_ders: self.intermediate_ders.clone(),
+            tls: generate_rsa_cert_short_lived("OpenChromecast", now)?,
+            generated: false,
+        })
     }
 }
 
@@ -157,8 +190,8 @@ fn rsa_signer(key_der: &[u8]) -> Result<SigningKey<Sha256>> {
 }
 
 /// Generate an RSA 2048 key + self-signed cert that is valid for only a few
-/// days (passes the Cast TLS lifetime check). Returns (pkcs8_key_der, cert_der).
-fn generate_rsa_cert_short_lived(cn: &str) -> Result<(Vec<u8>, Vec<u8>)> {
+/// days (passes the Cast TLS lifetime check), including its validity window.
+fn generate_rsa_cert_short_lived(cn: &str, now: OffsetDateTime) -> Result<TlsMaterial> {
     // rcgen's ring backend cannot generate RSA keys, so generate the key with
     // the pure-Rust `rsa` crate and import it for certificate building.
     let key = RsaPrivateKey::new(&mut OsRng, 2048).context("failed to generate RSA key")?;
@@ -178,11 +211,60 @@ fn generate_rsa_cert_short_lived(cn: &str) -> Result<(Vec<u8>, Vec<u8>)> {
     ];
     params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
     // Short-lived so it passes Chromium's 4-day TLS-cert lifetime check.
-    let now = OffsetDateTime::now_utc();
     params.not_before = now - Duration::days(1);
     params.not_after = now + Duration::days(TLS_CERT_LIFETIME_DAYS);
     let cert = params
         .self_signed(&key_pair)
         .context("failed to self-sign certificate")?;
-    Ok((key_der, cert.der().to_vec()))
+    Ok(TlsMaterial {
+        key_der,
+        cert_der: cert.der().to_vec(),
+        not_before: now - Duration::days(1),
+        not_after: now + Duration::days(TLS_CERT_LIFETIME_DAYS),
+    })
+}
+
+#[cfg(test)]
+mod rotation_tests {
+    use super::*;
+
+    #[test]
+    fn renewal_policy_covers_margin_expiry_and_clock_jumps() {
+        let now = OffsetDateTime::now_utc();
+        let identity = Identity::generate_at(now).unwrap();
+        assert!(identity.tls_valid_at(now));
+        assert!(!identity.tls_renewal_due_at(now));
+        assert!(!identity.tls_renewal_due_at(now + Duration::hours(47)));
+        assert!(identity.tls_renewal_due_at(now + Duration::hours(48)));
+        assert!(!identity.tls_valid_at(now + Duration::days(3)));
+        assert!(identity.tls_renewal_due_at(now + Duration::days(3)));
+        assert!(!identity.tls_valid_at(now - Duration::days(2)));
+        assert!(identity.tls_renewal_due_at(now - Duration::days(2)));
+    }
+
+    #[test]
+    fn generated_identity_refreshes_both_ephemeral_certificates() {
+        let now = OffsetDateTime::now_utc();
+        let identity = Identity::generate_at(now).unwrap();
+        let renewed = identity.renew_tls_at(now + Duration::days(2)).unwrap();
+        assert_ne!(identity.tls_cert_der(), renewed.tls_cert_der());
+        assert_eq!(renewed.auth_cert_der(), renewed.tls_cert_der());
+        assert!(renewed.tls_valid_at(now + Duration::days(4)));
+        assert!(!renewed.tls_renewal_due_at(now + Duration::days(2)));
+    }
+
+    #[test]
+    fn provided_identity_refresh_keeps_auth_key_and_entire_chain() {
+        let now = OffsetDateTime::now_utc();
+        let mut identity = Identity::generate_at(now).unwrap();
+        identity.generated = false;
+        identity.intermediate_ders = vec![vec![1, 2], vec![3, 4]];
+        let renewed = identity.renew_tls_at(now + Duration::days(2)).unwrap();
+        assert_ne!(identity.tls_cert_der(), renewed.tls_cert_der());
+        assert_eq!(identity.auth_cert_der(), renewed.auth_cert_der());
+        assert_eq!(identity.intermediate_ders(), renewed.intermediate_ders());
+        let mut challenge = vec![0x45; 32];
+        challenge.extend_from_slice(renewed.tls_cert_der());
+        assert_eq!(identity.sign(&challenge), renewed.sign(&challenge));
+    }
 }

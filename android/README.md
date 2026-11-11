@@ -34,9 +34,9 @@ discovery. This is a prototype, not a Google-certified Chromecast.
   from the screen or notification prevents the next resume. The boot receiver
   never opens an activity or takes over Home Assistant. No system-volume change. Initial
   software volume is 15 percent of the existing device media volume.
-- Targeted at Android 11 Echo hardware first. Other Android versions, long
-  uptime beyond the generated TLS certificate lifetime and physical A/V remain
-  unqualified until tested; installation alone is not acceptance.
+- Targeted at Android 11 Echo hardware first. Other Android versions, real
+  multi-day certificate rotation and broader physical A/V remain unqualified
+  until tested; installation alone is not acceptance.
 
 No desktop tray, mpv, VLC executable or server-side relay is shipped in the APK.
 The launcher icon is converted from the upstream MIT-licensed `assets/icon.ico`.
@@ -45,7 +45,7 @@ Cast protocol implementation. Desktop modules remain available on desktop.
 
 ## Build
 
-Development 0.1.8 adds optional per-device PEM loading from the app-private
+Version 0.1.8 added optional per-device PEM loading from the app-private
 `no_backup/identity/` directory: `certificate.pem` contains the leaf and
 intermediates, and `key.pem` is its matching RSA PKCS#8 or PKCS#1 key.
 Directories must be application-owned mode 0700, and regular single-link files
@@ -55,8 +55,27 @@ Stage authorized material through a reviewed private provisioning process,
 never terminal output, shared storage or a repository. Android backup excludes
 this data. This loader does not obtain credentials, unwrap Widevine keys, import
 precomputed signature bundles or validate Google's trust chain. Validate trust
-and a real sender separately. The 0.1.8 build is host-tested but not yet deployed
-or hardware-qualified; the last hardware-qualified prototype remains 0.1.7.
+and a real sender separately. This supplied-identity mode is host-tested with
+synthetic keys, not qualified with real device credentials. The absent-directory
+self-signed default was checked on Android in 0.1.9.
+
+Version 0.1.9 renews short-lived TLS material locally, checking every minute
+with a 24-hour renewal margin. Supplied device-auth keys and full certificate
+chains stay unchanged; default self-signed mode refreshes its ephemeral auth
+and TLS material together. Existing connections retain the matching immutable
+TLS/auth snapshot, while new connections use the new certificate. Renewal does
+not stop the player, contact a provisioning server, renew a device-auth
+certificate or establish Google trust. Invalid TLS material is not served while
+renewal is pending. Clock-jump and two-epoch loopback tests use synthetic keys
+and an injected clock; they do not prove real multi-day uptime.
+
+The 0.1.9 Android check passed silent audio, automatic synthetic video and
+dashboard return on STOP, end and player error. Native YouTube started, but the
+separate Home Assistant control recipe timed out waiting for its next command;
+those controls remain qualified on 0.1.7 only. That partial recipe also found
+the Android media volume unexpectedly nonzero at cleanup. It was restored to
+zero/muted; the cause is unresolved, so further media tests must not rely on
+the initial mute reading alone. No official phone, fresh boot or restore claim.
 
 Requirements: user Rust with `armv7-linux-androideabi` and
 `aarch64-linux-android` targets, SDK 36, NDK 27+, JDK 21, Gradle 9.2.1.

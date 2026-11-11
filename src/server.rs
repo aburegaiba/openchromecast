@@ -46,14 +46,64 @@ pub struct Shared {
 
 /// Accept loop: spawn one task per incoming connection.
 pub async fn run(listener: TcpListener, shared: Shared) -> Result<()> {
+    run_with_clock(
+        listener,
+        shared,
+        Arc::new(time::OffsetDateTime::now_utc),
+        std::time::Duration::from_secs(60),
+    )
+    .await
+}
+
+pub(crate) async fn run_with_clock(
+    listener: TcpListener,
+    mut shared: Shared,
+    clock: Arc<dyn Fn() -> time::OffsetDateTime + Send + Sync>,
+    check_interval: std::time::Duration,
+) -> Result<()> {
+    let mut tick = tokio::time::interval(check_interval);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut renewal: Option<tokio::task::JoinHandle<Result<Identity>>> = None;
     loop {
-        let (tcp, peer) = listener.accept().await?;
-        let shared = shared.clone();
-        tokio::spawn(async move {
-            if let Err(err) = handle_connection(tcp, peer, shared).await {
-                warn!("connection {peer} ended: {err:#}");
+        let renewed = async {
+            match renewal.as_mut() {
+                Some(task) => task.await,
+                None => std::future::pending().await,
             }
-        });
+        };
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (tcp, peer) = accepted?;
+                if !shared.identity.tls_valid_at(clock()) {
+                    debug!("TLS certificate is not currently valid; waiting for renewal");
+                    continue;
+                }
+                // The TLS handshake and device-auth response must use the same immutable epoch.
+                let shared = shared.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = handle_connection(tcp, peer, shared).await {
+                        warn!("connection {peer} ended: {err:#}");
+                    }
+                });
+            }
+            _ = tick.tick() => {
+                if renewal.is_none() && shared.identity.tls_renewal_due_at(clock()) {
+                    let previous = shared.identity.clone();
+                    let now = clock();
+                    renewal = Some(tokio::task::spawn_blocking(move || previous.renew_tls_at(now)));
+                }
+            }
+            result = renewed => {
+                renewal = None;
+                match result {
+                    Ok(Ok(identity)) if identity.tls_valid_at(clock()) => {
+                        shared.identity = Arc::new(identity);
+                        info!("TLS certificate renewed for new Cast connections");
+                    }
+                    _ => warn!("TLS renewal failed; no invalid certificate will be served"),
+                }
+            }
+        }
     }
 }
 

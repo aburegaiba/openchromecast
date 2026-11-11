@@ -2,7 +2,8 @@
 
 use super::*;
 use crate::proto::cast_channel::{
-    AuthChallenge, CastMessage, DeviceAuthMessage, HashAlgorithm, PayloadType, SignatureAlgorithm,
+    AuthChallenge, AuthResponse, CastMessage, DeviceAuthMessage, HashAlgorithm, PayloadType,
+    SignatureAlgorithm,
 };
 use prost::Message;
 use rustls::{
@@ -13,7 +14,7 @@ use rustls::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Debug)]
-struct TestCertificate(Vec<u8>);
+struct TestCertificate(Option<Vec<u8>>);
 impl ServerCertVerifier for TestCertificate {
     fn verify_server_cert(
         &self,
@@ -23,7 +24,11 @@ impl ServerCertVerifier for TestCertificate {
         _ocsp: &[u8],
         _now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
-        if end.as_ref() != self.0 {
+        if self
+            .0
+            .as_ref()
+            .is_some_and(|expected| end.as_ref() != expected)
+        {
             return Err(rustls::Error::General(
                 "unexpected loopback certificate".into(),
             ));
@@ -76,7 +81,7 @@ async fn client_with_identity(
         .await
         .unwrap();
     let address = listener.local_addr().unwrap();
-    let verifier = TestCertificate(identity.tls_cert_der().to_vec());
+    let expected = identity.tls_cert_der().to_vec();
     let bridge = Arc::new(Bridge::default());
     let shared = server::Shared {
         state: Arc::new(tokio::sync::Mutex::new(state::AppState::default())),
@@ -87,20 +92,185 @@ async fn client_with_identity(
     let task = tokio::spawn(async move {
         let _ = server::run(listener, shared).await;
     });
+    let client = connect_loopback(address, Some(expected)).await.unwrap();
+    (client, bridge, task)
+}
+
+async fn connect_loopback(
+    address: std::net::SocketAddr,
+    expected: Option<Vec<u8>>,
+) -> anyhow::Result<Client> {
     let config = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
     .with_safe_default_protocol_versions()
     .unwrap()
     .dangerous()
-    .with_custom_certificate_verifier(Arc::new(verifier))
+    .with_custom_certificate_verifier(Arc::new(TestCertificate(expected)))
     .with_no_client_auth();
-    let stream = tokio::net::TcpStream::connect(address).await.unwrap();
+    let stream = tokio::net::TcpStream::connect(address).await?;
     let client = tokio_rustls::TlsConnector::from(Arc::new(config))
         .connect(ServerName::try_from("localhost").unwrap(), stream)
+        .await?;
+    Ok(client)
+}
+
+async fn auth_response(client: &mut Client, nonce: Vec<u8>) -> AuthResponse {
+    let auth = DeviceAuthMessage {
+        challenge: Some(AuthChallenge {
+            sender_nonce: Some(nonce),
+            signature_algorithm: Some(SignatureAlgorithm::RsassaPkcs1v15 as i32),
+            hash_algorithm: Some(HashAlgorithm::Sha256 as i32),
+        }),
+        ..Default::default()
+    };
+    let message = CastMessage {
+        protocol_version: 0,
+        source_id: "sender-rotation-test".into(),
+        destination_id: "receiver-0".into(),
+        namespace: server::NS_DEVICE_AUTH.into(),
+        payload_type: PayloadType::Binary as i32,
+        payload_binary: Some(auth.encode_to_vec()),
+        ..Default::default()
+    }
+    .encode_to_vec();
+    client.write_u32(message.len() as u32).await.unwrap();
+    client.write_all(&message).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let length = client.read_u32().await.unwrap() as usize;
+            assert!(length < 1024 * 1024);
+            let mut bytes = vec![0; length];
+            client.read_exact(&mut bytes).await.unwrap();
+            let frame = CastMessage::decode(bytes.as_slice()).unwrap();
+            if frame.namespace == server::NS_DEVICE_AUTH {
+                return DeviceAuthMessage::decode(frame.payload_binary.unwrap().as_slice())
+                    .unwrap()
+                    .response
+                    .unwrap();
+            }
+        }
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn tls_rotation_preserves_existing_connection_auth_and_active_media() {
+    use std::sync::atomic::{AtomicI64, Ordering};
+    let (identity, leaf, chain) = synthetic_device_identity(2);
+    let identity = Arc::new(identity);
+    let old_certificate = identity.tls_cert_der().to_vec();
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let clock = Arc::new(AtomicI64::new(now));
+    let server_clock = clock.clone();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .unwrap();
-    (client, bridge, task)
+    let address = listener.local_addr().unwrap();
+    let bridge = Arc::new(Bridge::default());
+    let shared = server::Shared {
+        state: Arc::new(tokio::sync::Mutex::new(state::AppState::default())),
+        identity: identity.clone(),
+        player: bridge.spawn(),
+        youtube: None,
+    };
+    let task = tokio::spawn(async move {
+        server::run_with_clock(
+            listener,
+            shared,
+            Arc::new(move || {
+                time::OffsetDateTime::from_unix_timestamp(server_clock.load(Ordering::Acquire))
+                    .unwrap()
+            }),
+            std::time::Duration::from_millis(20),
+        )
+        .await
+        .unwrap();
+    });
+    let mut old = connect_loopback(address, Some(old_certificate.clone()))
+        .await
+        .unwrap();
+    let launched = request(
+        &mut old,
+        server::NS_RECEIVER,
+        "receiver-0",
+        json!({"type":"LAUNCH","appId":"CC1AD845","requestId":1}),
+    )
+    .await;
+    let transport = launched["status"]["applications"][0]["transportId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    request(
+        &mut old,
+        server::NS_MEDIA,
+        &transport,
+        json!({"type":"LOAD","requestId":2,
+        "media":{"contentId":"https://example.test/rotation.wav","contentType":"audio/wav"}}),
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let events = bridge.poll();
+    let generation = events.iter().find(|e| e["type"] == "load").unwrap()["generation"]
+        .as_u64()
+        .unwrap();
+    bridge.update(
+        generation,
+        PlayerSnapshot {
+            state: PlayerState::Playing,
+            position: 17.0,
+            duration: 60.0,
+            ..Default::default()
+        },
+    );
+    // Only the injected certificate clock moves. No system clock or real media is involved.
+    clock.store(now + 49 * 3600, Ordering::Release);
+    let mut fresh = tokio::time::timeout(std::time::Duration::from_secs(45), async {
+        loop {
+            if let Ok(client) = connect_loopback(address, None).await {
+                let peer = client.get_ref().1.peer_certificates().unwrap()[0].as_ref();
+                if peer != old_certificate {
+                    break client;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let fresh_certificate = fresh.get_ref().1.peer_certificates().unwrap()[0]
+        .as_ref()
+        .to_vec();
+    for (client, certificate, nonce) in [
+        (&mut old, old_certificate, vec![0x21; 32]),
+        (&mut fresh, fresh_certificate, vec![0x73; 32]),
+    ] {
+        let response = auth_response(client, nonce.clone()).await;
+        let mut input = nonce.clone();
+        input.extend_from_slice(&certificate);
+        assert_eq!(response.client_auth_certificate, leaf);
+        assert_eq!(response.intermediate_certificate, chain);
+        assert_eq!(response.sender_nonce, Some(nonce));
+        assert_eq!(
+            response.signature,
+            identity.sign(&input),
+            "wrong TLS epoch in auth response"
+        );
+    }
+    let status = request(
+        &mut old,
+        server::NS_MEDIA,
+        &transport,
+        json!({"type":"GET_STATUS","requestId":3}),
+    )
+    .await;
+    assert_eq!(status["status"][0]["playerState"], "PLAYING");
+    assert_eq!(status["status"][0]["currentTime"], 17.0);
+    assert!(!bridge.poll().iter().any(|e| e["type"] == "stop"));
+    drop(fresh);
+    drop(old);
+    task.abort();
 }
 
 fn synthetic_device_identity(count: usize) -> (crypto::Identity, Vec<u8>, Vec<Vec<u8>>) {
