@@ -32,6 +32,13 @@ use std::path::Path;
 use time::{Duration, OffsetDateTime};
 use tracing::info;
 
+#[cfg(feature = "legacy-bundle")]
+#[path = "legacy_identity.rs"]
+mod legacy;
+#[cfg(all(test, feature = "legacy-bundle"))]
+#[path = "legacy_identity_tests.rs"]
+pub(crate) mod legacy_tests;
+
 /// TLS certs must not have more than 4 days of remaining lifetime to pass
 /// Chromium's `VerifyTLSCertificate` check.
 const TLS_CERT_LIFETIME_DAYS: i64 = 3;
@@ -46,7 +53,9 @@ struct TlsMaterial {
 
 /// Signing key + certificate material for TLS and Cast device auth.
 pub struct Identity {
-    signer: SigningKey<Sha256>,
+    signer: Option<SigningKey<Sha256>>,
+    #[cfg(feature = "legacy-bundle")]
+    legacy: Option<(std::sync::Arc<legacy::BundleSet>, usize)>,
     /// `client_auth_certificate` (must chain to a Cast root CA in real devices).
     auth_cert_der: Vec<u8>,
     /// Certificates after the leaf, preserved in the supplied PEM order.
@@ -78,7 +87,9 @@ impl Identity {
         let tls = generate_rsa_cert_short_lived("OpenChromecast", now)?;
         let signer = rsa_signer(&tls.key_der)?;
         Ok(Self {
-            signer,
+            signer: Some(signer),
+            #[cfg(feature = "legacy-bundle")]
+            legacy: None,
             auth_cert_der: tls.cert_der.clone(),
             intermediate_ders: Vec::new(),
             tls,
@@ -127,7 +138,9 @@ impl Identity {
         let tls = generate_rsa_cert_short_lived("OpenChromecast", OffsetDateTime::now_utc())?;
 
         Ok(Self {
-            signer: SigningKey::new(key),
+            signer: Some(SigningKey::new(key)),
+            #[cfg(feature = "legacy-bundle")]
+            legacy: None,
             auth_cert_der,
             intermediate_ders,
             tls,
@@ -137,8 +150,98 @@ impl Identity {
 
     /// RSASSA-PKCS#1 v1.5 with SHA-256 over `data` — the Cast device-auth
     /// signature. The caller must pass `sender_nonce || tls_cert_der`.
-    pub fn sign(&self, data: &[u8]) -> Vec<u8> {
-        self.signer.sign(data).to_vec()
+    pub fn sign(&self, data: &[u8]) -> Result<Vec<u8>> {
+        Ok(self
+            .signer
+            .as_ref()
+            .context("legacy bundle has no fresh-nonce signing key")?
+            .sign(data)
+            .to_vec())
+    }
+
+    #[cfg(feature = "legacy-bundle")]
+    pub fn from_legacy_bundle(json: &str) -> Result<Self> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        Self::from_bundle_set(legacy::BundleSet::load(json)?, OffsetDateTime::now_utc())
+    }
+
+    #[cfg(feature = "legacy-bundle")]
+    fn from_bundle_set(
+        set: std::sync::Arc<legacy::BundleSet>,
+        now: OffsetDateTime,
+    ) -> Result<Self> {
+        let (index, bundle) = set.select(now)?;
+        Ok(Self {
+            signer: None,
+            auth_cert_der: bundle.device_cert_der.clone(),
+            intermediate_ders: bundle.intermediate_certs_der.clone(),
+            tls: Self::bundle_tls(bundle)?,
+            generated: false,
+            legacy: Some((set, index)),
+        })
+    }
+
+    #[cfg(feature = "legacy-bundle")]
+    fn bundle_tls(bundle: &vibecast_security::CertificateBundle) -> Result<TlsMaterial> {
+        let pem = std::str::from_utf8(&bundle.peer_key_pem).context("invalid TLS key encoding")?;
+        let key = RsaPrivateKey::from_pkcs8_pem(pem)
+            .or_else(|_| rsa::pkcs1::DecodeRsaPrivateKey::from_pkcs1_pem(pem))
+            .context("invalid bundle TLS RSA key")?;
+        let key_der = key.to_pkcs8_der()?.as_bytes().to_vec();
+        let signer = rustls::crypto::ring::sign::any_supported_type(&PrivateKeyDer::Pkcs8(
+            PrivatePkcs8KeyDer::from(key_der.clone()),
+        ))?;
+        rustls::sign::CertifiedKey::new(vec![bundle.peer_cert_der.clone().into()], signer)
+            .keys_match()
+            .context("bundle TLS certificate and key do not match")?;
+        Ok(TlsMaterial {
+            key_der,
+            cert_der: bundle.peer_cert_der.clone(),
+            not_before: OffsetDateTime::from_unix_timestamp(bundle.not_valid_before)?,
+            not_after: OffsetDateTime::from_unix_timestamp(bundle.not_valid_after)?,
+        })
+    }
+
+    pub fn device_auth_response(
+        &self,
+        challenge: &crate::proto::cast_channel::AuthChallenge,
+    ) -> Result<crate::proto::cast_channel::AuthResponse> {
+        use crate::proto::cast_channel::{AuthResponse, HashAlgorithm, SignatureAlgorithm};
+        anyhow::ensure!(
+            challenge.signature_algorithm.unwrap_or(1) == 1,
+            "unsupported Cast signature algorithm"
+        );
+        #[cfg(feature = "legacy-bundle")]
+        if let Some((set, index)) = &self.legacy {
+            let bundle = set.at(*index);
+            let hash = challenge.hash_algorithm.unwrap_or(0);
+            let signature = match hash {
+                0 => bundle.signature_sha1.clone(),
+                1 => bundle.signature_sha256.clone(),
+                _ => bail!("unsupported Cast hash algorithm"),
+            };
+            return Ok(AuthResponse {
+                signature,
+                client_auth_certificate: self.auth_cert_der.clone(),
+                intermediate_certificate: self.intermediate_ders.clone(),
+                signature_algorithm: Some(SignatureAlgorithm::RsassaPkcs1v15 as i32),
+                sender_nonce: None,
+                hash_algorithm: Some(hash),
+                crl: bundle.crl.clone(),
+            });
+        }
+        let nonce = challenge.sender_nonce.clone().unwrap_or_default();
+        let mut input = nonce.clone();
+        input.extend_from_slice(self.tls_cert_der());
+        Ok(AuthResponse {
+            signature: self.sign(&input)?,
+            client_auth_certificate: self.auth_cert_der.clone(),
+            intermediate_certificate: self.intermediate_ders.clone(),
+            signature_algorithm: Some(SignatureAlgorithm::RsassaPkcs1v15 as i32),
+            sender_nonce: Some(nonce),
+            hash_algorithm: Some(HashAlgorithm::Sha256 as i32),
+            crl: None,
+        })
     }
 
     pub fn auth_cert_der(&self) -> &[u8] {
@@ -165,17 +268,28 @@ impl Identity {
     }
 
     pub fn tls_renewal_due_at(&self, now: OffsetDateTime) -> bool {
+        #[cfg(feature = "legacy-bundle")]
+        if let Some((set, index)) = &self.legacy {
+            return !self.tls_valid_at(now)
+                || set.select(now).is_ok_and(|(next, _)| next != *index);
+        }
         !self.tls_valid_at(now)
             || now + Duration::hours(TLS_RENEWAL_MARGIN_HOURS) >= self.tls.not_after
     }
 
     /// Retained connections keep their old snapshot. A supplied auth key/chain is preserved.
     pub fn renew_tls_at(&self, now: OffsetDateTime) -> Result<Self> {
+        #[cfg(feature = "legacy-bundle")]
+        if let Some((set, _)) = &self.legacy {
+            return Self::from_bundle_set(set.clone(), now);
+        }
         if self.generated {
             return Self::generate_at(now);
         }
         Ok(Self {
             signer: self.signer.clone(),
+            #[cfg(feature = "legacy-bundle")]
+            legacy: None,
             auth_cert_der: self.auth_cert_der.clone(),
             intermediate_ders: self.intermediate_ders.clone(),
             tls: generate_rsa_cert_short_lived("OpenChromecast", now)?,
@@ -265,6 +379,9 @@ mod rotation_tests {
         assert_eq!(identity.intermediate_ders(), renewed.intermediate_ders());
         let mut challenge = vec![0x45; 32];
         challenge.extend_from_slice(renewed.tls_cert_der());
-        assert_eq!(identity.sign(&challenge), renewed.sign(&challenge));
+        assert_eq!(
+            identity.sign(&challenge).unwrap(),
+            renewed.sign(&challenge).unwrap()
+        );
     }
 }

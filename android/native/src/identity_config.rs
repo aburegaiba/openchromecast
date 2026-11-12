@@ -18,6 +18,21 @@ pub fn load(private_root: &Path) -> Result<Identity> {
         Err(error) => return Err(error).context("private Cast identity unavailable"),
     };
     check_directory(&metadata, owner)?;
+    #[cfg(feature = "legacy-bundle")]
+    if fs::symlink_metadata(directory.join("legacy-bundle.json")).is_ok() {
+        ensure!(
+            fs::symlink_metadata(directory.join("certificate.pem")).is_err()
+                && fs::symlink_metadata(directory.join("key.pem")).is_err(),
+            "ambiguous Cast identity configuration"
+        );
+        let json = read_private_text(
+            &directory.join("legacy-bundle.json"),
+            owner,
+            32 * 1024 * 1024,
+        )?;
+        return Identity::from_legacy_bundle(&json)
+            .context("configured legacy Cast bundle is invalid");
+    }
     // An existing but incomplete or invalid identity is never silently replaced.
     let certificate = read_private_pem(&directory.join("certificate.pem"), owner)?;
     let key = read_private_pem(&directory.join("key.pem"), owner)?;
@@ -32,36 +47,44 @@ fn check_directory(metadata: &Metadata, owner: u32) -> Result<()> {
     Ok(())
 }
 
-fn check_file(metadata: &Metadata, owner: u32) -> Result<()> {
+fn check_file_limit(metadata: &Metadata, owner: u32, limit: u64) -> Result<()> {
     ensure!(
         metadata.is_file()
             && metadata.uid() == owner
             && metadata.mode() & 0o7777 == 0o600
             && metadata.nlink() == 1
-            && (1..=MAX_PEM_BYTES).contains(&metadata.len()),
+            && (1..=limit).contains(&metadata.len()),
         "Cast identity file must be private, bounded and owned by the application"
     );
     Ok(())
 }
 
+fn check_file(metadata: &Metadata, owner: u32) -> Result<()> {
+    check_file_limit(metadata, owner, MAX_PEM_BYTES)
+}
+
 fn read_private_pem(path: &Path, owner: u32) -> Result<String> {
+    read_private_text(path, owner, MAX_PEM_BYTES)
+}
+
+fn read_private_text(path: &Path, owner: u32, limit: u64) -> Result<String> {
     let expected = fs::symlink_metadata(path).context("Cast identity file unavailable")?;
-    check_file(&expected, owner)?;
+    check_file_limit(&expected, owner, limit)?;
     let file: File = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
         .context("cannot open private Cast identity")?;
     let actual = file.metadata()?;
-    check_file(&actual, owner)?;
+    check_file_limit(&actual, owner, limit)?;
     ensure!(
         expected.dev() == actual.dev() && expected.ino() == actual.ino(),
         "Cast identity file changed while opening"
     );
     let mut bytes = Vec::new();
-    file.take(MAX_PEM_BYTES + 1).read_to_end(&mut bytes)?;
+    file.take(limit + 1).read_to_end(&mut bytes)?;
     ensure!(
-        bytes.len() as u64 <= MAX_PEM_BYTES,
+        bytes.len() as u64 <= limit,
         "Cast identity file exceeds limit"
     );
     String::from_utf8(bytes).context("Cast identity PEM must be UTF-8")
@@ -147,7 +170,7 @@ mod tests {
         let mut signed = vec![0x31; 32];
         signed.extend_from_slice(identity.tls_cert_der());
         let signature =
-            rsa::pkcs1v15::Signature::try_from(identity.sign(&signed).as_slice()).unwrap();
+            rsa::pkcs1v15::Signature::try_from(identity.sign(&signed).unwrap().as_slice()).unwrap();
         verifier.verify(&signed, &signature).unwrap();
         signed[0] ^= 1;
         assert!(verifier.verify(&signed, &signature).is_err());
@@ -239,5 +262,26 @@ mod tests {
             fixture.write("key.pem", &bytes);
             assert!(load(&fixture.root).is_err());
         }
+    }
+
+    #[cfg(feature = "legacy-bundle")]
+    #[test]
+    fn legacy_bundle_requires_private_files_and_unambiguous_explicit_configuration() {
+        let fixture = Fixture::new();
+        fixture.install();
+        let json = crate::crypto::legacy_tests::fixture(time::OffsetDateTime::now_utc());
+        fixture.write("legacy-bundle.json", json.as_bytes());
+        assert!(load(&fixture.root).is_err());
+        fs::remove_file(fixture.root.join("identity/certificate.pem")).unwrap();
+        fs::remove_file(fixture.root.join("identity/key.pem")).unwrap();
+        let identity = load(&fixture.root).unwrap();
+        assert!(identity.sign(b"fresh nonce").is_err());
+        let path = fixture.root.join("identity/legacy-bundle.json");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(load(&fixture.root).is_err());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::rename(&path, fixture.root.join("original-bundle")).unwrap();
+        symlink(fixture.root.join("original-bundle"), &path).unwrap();
+        assert!(load(&fixture.root).is_err());
     }
 }

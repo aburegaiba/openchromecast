@@ -16,9 +16,12 @@ name = "cast-sniff"
 path = "src/bin/sniff.rs"
 
 [features]
+legacy-bundle = ["dep:vibecast-security", "dep:sha1"]
 embedded-player = ["dep:async-trait", "dep:reqwest", "dep:roxmltree", "dep:vibecast-apps-youtube", "dep:vibecast-sdk"]
 
 [dependencies]
+vibecast-security = { git = "https://github.com/emilsvennesson/vibecast", rev = "4cde20b3f49b296debec8cb9a2badb51c7bae940", optional = true }
+sha1 = { version = "0.10", features = ["oid"], optional = true }
 anyhow = "1"
 async-trait = { version = "0.1", optional = true }
 roxmltree = { version = "0.21", optional = true }
@@ -57,3 +60,6 @@ gtk = "0.18"
 # Embeds assets/icon.ico into the Windows executable (taskbar/Explorer icon).
 # Locates rc.exe via vswhere (more reliable than winres on bare rustup+VS).
 embed-resource = "2"
+
+[dev-dependencies]
+base64 = "0.22"

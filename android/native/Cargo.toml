@@ -10,10 +10,13 @@ name = "openchromecast_android"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = ["embedded-player"]
+default = ["embedded-player", "legacy-bundle"]
 embedded-player = []
+legacy-bundle = ["dep:vibecast-security", "dep:sha1"]
 
 [dependencies]
+vibecast-security = { git = "https://github.com/emilsvennesson/vibecast", rev = "4cde20b3f49b296debec8cb9a2badb51c7bae940", optional = true }
+sha1 = { version = "0.10", features = ["oid"], optional = true }
 anyhow = "1"
 async-trait = "0.1"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
@@ -38,4 +41,5 @@ vibecast-apps-youtube = { git = "https://github.com/emilsvennesson/vibecast", re
 vibecast-sdk = { git = "https://github.com/emilsvennesson/vibecast", rev = "4cde20b3f49b296debec8cb9a2badb51c7bae940" }
 
 [dev-dependencies]
+base64 = "0.22"
 tower = { version = "0.5", features = ["util"] }

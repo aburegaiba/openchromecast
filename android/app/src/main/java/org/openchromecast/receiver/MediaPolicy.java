@@ -4,6 +4,9 @@ import java.net.URI;
 import java.net.URISyntaxException;
 
 final class MediaPolicy {
+    static float restoredVolume(float value) {
+        return Float.isFinite(value) ? Math.max(0f, Math.min(1f, value)) : 0.15f;
+    }
     static boolean acceptsManifest(String mime, String manifest) {
         return "application/dash+xml".equals(mime) && manifest != null && !manifest.isEmpty()
             && manifest.getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= 1024 * 1024;

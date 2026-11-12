@@ -297,7 +297,7 @@ async fn tls_rotation_preserves_existing_connection_auth_and_active_media() {
         assert_eq!(response.sender_nonce, Some(nonce));
         assert_eq!(
             response.signature,
-            identity.sign(&input),
+            identity.sign(&input).unwrap(),
             "wrong TLS epoch in auth response"
         );
     }
@@ -371,6 +371,108 @@ fn synthetic_device_identity(count: usize) -> (crypto::Identity, Vec<u8>, Vec<Ve
     (identity.unwrap(), leaf.der().to_vec(), expected_chain)
 }
 
+#[cfg(feature = "legacy-bundle")]
+#[tokio::test]
+async fn legacy_rotation_on_accept_keeps_existing_tls_auth_and_media_epoch() {
+    use std::sync::atomic::{AtomicI64, Ordering};
+    let now = time::OffsetDateTime::now_utc();
+    let json = crypto::legacy_tests::fixture(now);
+    let identity = Arc::new(crypto::Identity::from_legacy_bundle(&json).unwrap());
+    let expected_next = identity
+        .renew_tls_at(now + time::Duration::seconds(60))
+        .unwrap();
+    let old_der = identity.tls_cert_der().to_vec();
+    let clock = Arc::new(AtomicI64::new(now.unix_timestamp()));
+    let server_clock = clock.clone();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let bridge = Arc::new(Bridge::default());
+    let shared = server::Shared {
+        state: Arc::new(tokio::sync::Mutex::new(state::AppState::default())),
+        identity: identity.clone(),
+        player: bridge.spawn(),
+        connection_filter: None,
+        youtube: None,
+    };
+    let task = tokio::spawn(async move {
+        server::run_with_clock(
+            listener,
+            shared,
+            Arc::new(move || {
+                time::OffsetDateTime::from_unix_timestamp(server_clock.load(Ordering::Acquire))
+                    .unwrap()
+            }),
+            std::time::Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    });
+    let mut old = connect_loopback(address, Some(old_der)).await.unwrap();
+    let launched = request(
+        &mut old,
+        server::NS_RECEIVER,
+        "receiver-0",
+        json!({"type":"LAUNCH","appId":"CC1AD845","requestId":1}),
+    )
+    .await;
+    let transport = launched["status"]["applications"][0]["transportId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    request(
+        &mut old,
+        server::NS_MEDIA,
+        &transport,
+        json!({"type":"LOAD","requestId":2,
+        "media":{"contentId":"https://example.test/legacy.wav","contentType":"audio/wav"}}),
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let events = bridge.poll();
+    let generation = events.iter().find(|e| e["type"] == "load").unwrap()["generation"]
+        .as_u64()
+        .unwrap();
+    bridge.update(
+        generation,
+        PlayerSnapshot {
+            state: PlayerState::Playing,
+            position: 17.0,
+            duration: 60.0,
+            ..Default::default()
+        },
+    );
+    clock.store(now.unix_timestamp() + 60, Ordering::Release);
+    // No timer tick: the first new connection must rotate an expired window immediately.
+    let mut fresh = connect_loopback(address, Some(expected_next.tls_cert_der().to_vec()))
+        .await
+        .unwrap();
+    let challenge = AuthChallenge {
+        sender_nonce: Some(vec![0x21; 32]),
+        signature_algorithm: Some(1),
+        hash_algorithm: Some(1),
+    };
+    for (client, expected) in [(&mut old, &*identity), (&mut fresh, &expected_next)] {
+        let response = auth_response(client, challenge.sender_nonce.clone().unwrap()).await;
+        assert_eq!(response, expected.device_auth_response(&challenge).unwrap());
+        assert_eq!(response.sender_nonce, None);
+    }
+    let status = request(
+        &mut old,
+        server::NS_MEDIA,
+        &transport,
+        json!({"type":"GET_STATUS","requestId":3}),
+    )
+    .await;
+    assert_eq!(status["status"][0]["playerState"], "PLAYING");
+    assert_eq!(status["status"][0]["currentTime"], 17.0);
+    assert!(!bridge.poll().iter().any(|event| event["type"] == "stop"));
+    drop(fresh);
+    drop(old);
+    task.abort();
+}
+
 #[tokio::test]
 async fn device_auth_keeps_complete_certificate_chain_and_nonce_binding() {
     for count in [0, 1, 2] {
@@ -378,7 +480,7 @@ async fn device_auth_keeps_complete_certificate_chain_and_nonce_binding() {
         let nonce = vec![0x81; 32];
         let mut signed = nonce.clone();
         signed.extend_from_slice(identity.tls_cert_der());
-        let expected_signature = identity.sign(&signed);
+        let expected_signature = identity.sign(&signed).unwrap();
         let (mut stream, _, task) = client_with_identity(identity).await;
         let challenge = DeviceAuthMessage {
             challenge: Some(AuthChallenge {

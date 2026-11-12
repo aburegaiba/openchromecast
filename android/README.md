@@ -25,15 +25,18 @@ discovery. This is a prototype, not a Google-certified Chromecast.
   no setup, reboot, account or YouTube application API is exposed. This allows
   compatible discovery clients to identify the receiver without claiming
   Google certification. The Cast listener remains on TCP 8009.
-- Self-signed device authentication is unchanged. Google SDK applications may
-  reject it even when discovery and Home Assistant control work. No official
+- Self-signed device authentication remains the default. An explicitly imported
+  private legacy bundle can supply cached TLS-only signatures, with local window
+  rotation; see [the opt-in and its trust limits](LEGACY_BUNDLE.md). Google SDK applications may
+  still reject it even when discovery and Home Assistant control work. No official
   YouTube phone acceptance, Netflix/DRM, screen mirroring, multiroom or universal
   sender support claim.
 - Optional automatic boot resume, disabled by default. It resumes only after
   the switch is enabled and the receiver has been explicitly started; stopping
   from the screen or notification prevents the next resume. The boot receiver
   never opens an activity or takes over Home Assistant. No system-volume change. Initial
-  software volume is 15 percent of the existing device media volume.
+  software volume defaults to 15 percent of the existing device media volume;
+  later sender volume/mute choices are persisted without changing system volume.
 - Targeted at Android 11 Echo hardware first. Other Android versions, real
   multi-day certificate rotation and broader physical A/V remain unqualified
   until tested; installation alone is not acceptance.
@@ -44,6 +47,17 @@ Android JNI links the same protocol sources, rather than a second hand-written
 Cast protocol implementation. Desktop modules remain available on desktop.
 
 ## Build
+
+Version 0.1.11 adds opt-in legacy bundle loading and local certificate-window
+rotation using the pinned MIT Vibecast security parser. It never fetches or
+ships credentials, never calls a remote signer and does not require another
+Cast device. Existing connections retain their matching TLS/auth snapshot.
+Expiration triggers selection from locally stored windows, including on a new
+connection before the periodic timer fires; no valid window means refusal,
+not a self-signed fallback. Synthetic tests cover exact expiration, backwards
+clock jumps, invalid signatures/keys and active simulated playback across rotation.
+Actual official-sender acceptance and real multi-day operation must be checked
+separately. No claim of nonce-bound authentication is made for a legacy bundle.
 
 Version 0.1.8 added optional per-device PEM loading from the app-private
 `no_backup/identity/` directory: `certificate.pem` contains the leaf and

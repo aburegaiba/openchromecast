@@ -3,6 +3,14 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class MediaPolicyTest {
+    @Test public void restoresUserVolumeWithoutChangingTheSafeDefault() {
+        assertEquals(1f, MediaPolicy.restoredVolume(1f), 0f);
+        assertEquals(0f, MediaPolicy.restoredVolume(0f), 0f);
+        assertEquals(1f, MediaPolicy.restoredVolume(2f), 0f);
+        assertEquals(0f, MediaPolicy.restoredVolume(-1f), 0f);
+        assertEquals(0.15f, MediaPolicy.restoredVolume(Float.NaN), 0f);
+        assertEquals(0.15f, MediaPolicy.restoredVolume(Float.POSITIVE_INFINITY), 0f);
+    }
     @Test public void acceptsOnlyBoundedNativeDashManifests() {
         assertTrue(MediaPolicy.acceptsManifest("application/dash+xml", "<MPD/>"));
         assertFalse(MediaPolicy.acceptsManifest("text/html", "<MPD/>"));

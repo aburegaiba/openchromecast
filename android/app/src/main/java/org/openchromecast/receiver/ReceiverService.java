@@ -44,6 +44,8 @@ public final class ReceiverService extends Service {
         manager.createNotificationChannel(new NotificationChannel(CHANNEL, "Reception Cast", NotificationManager.IMPORTANCE_LOW));
         foreground(false);
         SharedPreferences settings = getSharedPreferences("receiver", MODE_PRIVATE);
+        volume = MediaPolicy.restoredVolume(settings.getFloat("volume", 0.15f));
+        muted = settings.getBoolean("muted", false);
         deviceId = settings.getString("device_id", null);
         if (deviceId == null) {
             deviceId = UUID.randomUUID().toString().replace("-", "");
@@ -56,7 +58,7 @@ public final class ReceiverService extends Service {
             .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true);
         player.setHandleAudioBecomingNoisy(true);
         player.setWakeMode(C.WAKE_MODE_NETWORK);
-        player.setVolume(volume);
+        player.setVolume(muted ? 0f : volume);
         player.addListener(new Player.Listener() {
             @Override public void onPlayerError(PlaybackException error) {
                 playbackError = true;
@@ -242,7 +244,11 @@ public final class ReceiverService extends Service {
         }
     }
 
-    private void applyVolume() { player.setVolume(muted ? 0f : volume); publish(); }
+    private void applyVolume() {
+        getSharedPreferences("receiver", MODE_PRIVATE).edit()
+            .putFloat("volume", volume).putBoolean("muted", muted).apply();
+        player.setVolume(muted ? 0f : volume); publish();
+    }
 
     private void publish() {
         if (destroying || player == null) return;

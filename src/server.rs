@@ -7,9 +7,7 @@
 use crate::crypto::Identity;
 use crate::media;
 use crate::player::PlayerHandle;
-use crate::proto::cast_channel::{
-    AuthResponse, CastMessage, DeviceAuthMessage, HashAlgorithm, PayloadType, SignatureAlgorithm,
-};
+use crate::proto::cast_channel::{AuthChallenge, CastMessage, DeviceAuthMessage, PayloadType};
 use crate::receiver;
 use crate::state::AppState;
 use crate::youtube;
@@ -80,8 +78,12 @@ pub(crate) async fn run_with_clock(
                     continue;
                 }
                 if !shared.identity.tls_valid_at(clock()) {
-                    debug!("TLS certificate is not currently valid; waiting for renewal");
-                    continue;
+                    let previous = shared.identity.clone();
+                    let now = clock();
+                    match tokio::task::spawn_blocking(move || previous.renew_tls_at(now)).await {
+                        Ok(Ok(identity)) if identity.tls_valid_at(clock()) => shared.identity = Arc::new(identity),
+                        _ => { debug!("no currently valid TLS epoch available"); continue; }
+                    }
                 }
                 // The TLS handshake and device-auth response must use the same immutable epoch.
                 let shared = shared.clone();
@@ -511,23 +513,13 @@ async fn handle_device_auth(msg: &CastMessage, tx: &MessageSink, shared: &Shared
 
     // DeviceAuthMessage.challenge is a length-delimited sub-message at field 1.
     if let Some(challenge) = extract_length_delimited(payload, 1) {
-        let nonce = extract_nonce(challenge).unwrap_or_default();
-
-        // The signature covers (sender_nonce || TLS peer cert).
-        let mut sig_input = nonce.clone();
-        sig_input.extend_from_slice(shared.identity.tls_cert_der());
-        let signature = shared.identity.sign(&sig_input);
-
+        let mut parsed =
+            AuthChallenge::decode(challenge).context("invalid device-auth challenge")?;
+        if parsed.sender_nonce.is_none() {
+            parsed.sender_nonce = extract_nonce(challenge);
+        }
         let response = DeviceAuthMessage {
-            response: Some(AuthResponse {
-                signature,
-                client_auth_certificate: shared.identity.auth_cert_der().to_vec(),
-                intermediate_certificate: shared.identity.intermediate_ders().to_vec(),
-                signature_algorithm: Some(SignatureAlgorithm::RsassaPkcs1v15 as i32),
-                sender_nonce: Some(nonce.clone()),
-                hash_algorithm: Some(HashAlgorithm::Sha256 as i32),
-                crl: None,
-            }),
+            response: Some(shared.identity.device_auth_response(&parsed)?),
             ..Default::default()
         };
 
@@ -542,11 +534,7 @@ async fn handle_device_auth(msg: &CastMessage, tx: &MessageSink, shared: &Shared
             ..Default::default()
         };
         send_message(tx, &reply).await?;
-        info!(
-            "completed device auth (nonce {}B, sig input {}B)",
-            nonce.len(),
-            sig_input.len()
-        );
+        info!("completed device auth");
     }
     Ok(())
 }
