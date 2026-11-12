@@ -88,6 +88,12 @@ async fn client_with_identity(
         identity: Arc::new(identity),
         player: bridge.spawn(),
         connection_filter: None,
+        discovery: Some(receiver::DiscoveryInfo {
+            id: uuid::Uuid::parse_str("e8d8571a824a45df88929e1c220f602d").unwrap(),
+            name: "Synthetic Echo".into(),
+            model: "OpenChromecast Android".into(),
+            capabilities: 5,
+        }),
         youtube: None,
     };
     let task = tokio::spawn(async move {
@@ -171,6 +177,7 @@ async fn connection_filter_rejects_before_tls_and_applies_to_each_new_connection
         identity: Arc::new(identity),
         player: bridge.spawn(),
         connection_filter: Some(Arc::new(move |_| gate.load(Ordering::SeqCst))),
+        discovery: None,
         youtube: None,
     };
     let task = tokio::spawn(async move {
@@ -216,6 +223,7 @@ async fn tls_rotation_preserves_existing_connection_auth_and_active_media() {
         identity: identity.clone(),
         player: bridge.spawn(),
         connection_filter: None,
+        discovery: None,
         youtube: None,
     };
     let task = tokio::spawn(async move {
@@ -394,6 +402,7 @@ async fn legacy_rotation_on_accept_keeps_existing_tls_auth_and_media_epoch() {
         identity: identity.clone(),
         player: bridge.spawn(),
         connection_filter: None,
+        discovery: None,
         youtube: None,
     };
     let task = tokio::spawn(async move {
@@ -598,6 +607,55 @@ async fn tls_receiver_status() {
             .unwrap()
             .is_empty()
     );
+    task.abort();
+}
+
+#[tokio::test]
+async fn canonical_app_availability_is_correlated_and_does_not_launch() {
+    let (mut stream, bridge, task) = client().await;
+    let result = request(
+        &mut stream,
+        server::NS_RECEIVER,
+        "receiver-0",
+        json!({"type":"GET_APP_AVAILABILITY","requestId":71,"appId":["CC1AD845","UNKNOWN_TEST"]}),
+    )
+    .await;
+    assert_eq!(result["type"], "GET_APP_AVAILABILITY");
+    assert_eq!(result["availability"]["CC1AD845"], "APP_AVAILABLE");
+    assert_eq!(result["availability"]["UNKNOWN_TEST"], "APP_UNAVAILABLE");
+    let status = request(
+        &mut stream,
+        server::NS_RECEIVER,
+        "receiver-0",
+        json!({"type":"GET_STATUS","requestId":72}),
+    )
+    .await;
+    assert!(
+        status["status"]["applications"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(bridge.poll().iter().all(|e| e["type"] != "load"));
+    task.abort();
+}
+
+#[tokio::test]
+async fn discovery_namespace_returns_truthful_compact_identity_and_video_audio_capabilities() {
+    let (mut stream, bridge, task) = client().await;
+    let result = request(
+        &mut stream,
+        "urn:x-cast:com.google.cast.receiver.discovery",
+        "receiver-0",
+        json!({"type":"GET_DEVICE_INFO","requestId":73}),
+    )
+    .await;
+    assert_eq!(result["type"], "DEVICE_INFO");
+    assert_eq!(result["deviceId"], "e8d8571a824a45df88929e1c220f602d");
+    assert_eq!(result["friendlyName"], "Synthetic Echo");
+    assert_eq!(result["deviceModel"], "OpenChromecast Android");
+    assert_eq!(result["deviceCapabilities"], 5);
+    assert!(bridge.poll().iter().all(|e| e["type"] != "load"));
     task.abort();
 }
 

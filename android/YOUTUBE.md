@@ -30,8 +30,10 @@ writer alive.
 
 This code does not obtain a Google-trusted Cast identity, bypass device
 authentication or implement DIAL, YouTube TV codes, screen mirroring or every
-Google Cast web app. The receiver currently generates a self-signed identity.
-Official senders may reject it before MDX runs. Playback via a permissive test
+Google Cast web app. By default it generates a self-signed identity; an optional
+private legacy bundle supplies cached TLS-only signatures, not a fresh
+nonce-bound signature. See `README.md` for that mode's limits. Official senders
+may still reject either mode before MDX runs. Playback via a permissive test
 client is not proof that the official YouTube phone app accepts the device.
 
 Video uses the existing activity/notification behavior. Background takeover and
@@ -48,6 +50,11 @@ YouTube LOAD and advancing Media3 position, pause/seek/stop, app switch,
 unchanged receiver identity/startup preferences and Home Assistant discovery.
 Test the official phone application separately; leave that requirement open
 until actual client connection and playback are verified.
+
+Version 0.1.12 accepts the standard `appId` array in availability queries and
+answers `GET_DEVICE_INFO` with its actual identity and audio/video capabilities.
+Android registers Default Media Receiver and YouTube DNS-SD subtypes on the
+same instance. These are discovery fixes, not proof of official sender support.
 
 On the tested ARMv7 Android 11 device, the 0.1.5 prototype completed MDX,
 native YouTube LOAD, autoplay false, advancing playback, pause, seek, resume

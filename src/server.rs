@@ -26,6 +26,7 @@ pub const NS_CONNECTION: &str = "urn:x-cast:com.google.cast.tp.connection";
 pub const NS_HEARTBEAT: &str = "urn:x-cast:com.google.cast.tp.heartbeat";
 pub const NS_DEVICE_AUTH: &str = "urn:x-cast:com.google.cast.tp.deviceauth";
 pub const NS_RECEIVER: &str = "urn:x-cast:com.google.cast.receiver";
+pub const NS_DISCOVERY: &str = "urn:x-cast:com.google.cast.receiver.discovery";
 pub const NS_MEDIA: &str = "urn:x-cast:com.google.cast.media";
 pub const NS_YOUTUBE: &str = "urn:x-cast:com.google.youtube.mdx";
 
@@ -40,6 +41,7 @@ pub struct Shared {
     pub identity: Arc<Identity>,
     pub player: PlayerHandle,
     pub connection_filter: Option<ConnectionFilter>,
+    pub discovery: Option<receiver::DiscoveryInfo>,
     #[cfg(feature = "embedded-player")]
     pub youtube: Option<Arc<youtube::Host>>,
 }
@@ -479,6 +481,7 @@ async fn dispatch(msg: &CastMessage, tx: &MessageSink, shared: &Shared) -> Resul
         NS_CONNECTION => handle_connection_ns(msg).await,
         NS_HEARTBEAT => handle_heartbeat(msg, tx).await,
         NS_RECEIVER => receiver::handle(msg, tx, shared).await,
+        NS_DISCOVERY => receiver::handle_discovery(msg, tx, shared).await,
         NS_MEDIA => {
             #[cfg(feature = "embedded-player")]
             if let Some(host) = &shared.youtube

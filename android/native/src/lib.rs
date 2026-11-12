@@ -156,6 +156,10 @@ fn start(
                         identity: Arc::new(identity),
                         player,
                         connection_filter: Some(worker_network.filter()),
+                        discovery: Some(receiver::DiscoveryInfo {
+                            id: info.id, name: info.name.clone(),
+                            model: "OpenChromecast Android".into(), capabilities: 5,
+                        }),
                         youtube: Some(host.clone()),
                     };
                     worker_bridge.event(json!({"type":"ready"}))?;

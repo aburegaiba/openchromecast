@@ -25,6 +25,10 @@ discovery. This is a prototype, not a Google-certified Chromecast.
   no setup, reboot, account or YouTube application API is exposed. This allows
   compatible discovery clients to identify the receiver without claiming
   Google certification. The Cast listener remains on TCP 8009.
+- Application-specific DNS-SD subtypes for Default Media Receiver and YouTube
+  share the same single base instance and UUID. Cast `GET_DEVICE_INFO` reports
+  the matching compact UUID, name, model and audio/video-output capabilities.
+  Standard `GET_APP_AVAILABILITY` arrays are answered without launching apps.
 - Self-signed device authentication remains the default. An explicitly imported
   private legacy bundle can supply cached TLS-only signatures, with local window
   rotation; see [the opt-in and its trust limits](LEGACY_BUNDLE.md). Google SDK applications may

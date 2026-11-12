@@ -274,11 +274,11 @@ public final class ReceiverService extends Service {
         if (connectivity.getActiveNetwork() == null) return;
         NsdServiceInfo info = new NsdServiceInfo();
         info.setServiceName(receiverName);
-        info.setServiceType("_googlecast._tcp.");
+        info.setServiceType(CastDiscoveryPolicy.REGISTRATION_TYPE);
         info.setPort(PORT);
         info.setAttribute("id", deviceId); info.setAttribute("fn", receiverName);
         info.setAttribute("md", "OpenChromecast Android"); info.setAttribute("ve", "05");
-        info.setAttribute("ca", "5"); info.setAttribute("st", "0");
+        info.setAttribute("ca", Integer.toString(CastDiscoveryPolicy.CAPABILITIES)); info.setAttribute("st", "0");
         info.setAttribute("nf", "1"); info.setAttribute("rs", "");
         registration = new NsdManager.RegistrationListener() {
             @Override public void onServiceRegistered(NsdServiceInfo service) {

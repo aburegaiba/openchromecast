@@ -3,13 +3,50 @@
 //! Handles `GET_STATUS`, `GET_APP_AVAILABILITY`, `LAUNCH`, `STOP`, `SET_VOLUME`.
 
 use crate::server::{
-    MessageSink, NS_MEDIA, NS_RECEIVER, NS_YOUTUBE, Shared, payload_json, send_json,
+    MessageSink, NS_DISCOVERY, NS_MEDIA, NS_RECEIVER, NS_YOUTUBE, Shared, payload_json, send_json,
 };
 use crate::state::{AppState, Session};
 use anyhow::Result;
 use serde_json::{Value, json};
 use tracing::{info, warn};
 use uuid::Uuid;
+
+#[derive(Clone)]
+pub struct DiscoveryInfo {
+    pub id: Uuid,
+    pub name: String,
+    pub model: String,
+    pub capabilities: u32,
+}
+
+pub async fn handle_discovery(
+    msg: &crate::proto::cast_channel::CastMessage,
+    tx: &MessageSink,
+    shared: &Shared,
+) -> Result<()> {
+    let payload = payload_json(msg)?;
+    if payload["type"] != "GET_DEVICE_INFO" {
+        return Ok(());
+    }
+    if let Some(info) = &shared.discovery {
+        let rid = payload.get("requestId").cloned().unwrap_or(json!(0));
+        send_json(
+            tx,
+            "receiver-0",
+            &msg.source_id,
+            NS_DISCOVERY,
+            &json!({
+                "type":"DEVICE_INFO", "requestId":rid,
+                "deviceId":info.id.simple().to_string(), "deviceModel":info.model,
+                "friendlyName":info.name, "deviceCapabilities":info.capabilities,
+                "deviceIconUrl":"", "controlNotifications":1,
+                "receiverMetricsId":"", "wifiProximityId":""
+            }),
+        )
+        .await?;
+    }
+    Ok(())
+}
 
 pub async fn handle(
     msg: &crate::proto::cast_channel::CastMessage,
@@ -58,7 +95,8 @@ pub async fn handle(
                 "receiver-0",
                 &msg.source_id,
                 NS_RECEIVER,
-                &json!({ "requestId": rid, "availability": availability, "type": "RECEIVER_ACTION" }),
+                &json!({ "requestId": rid, "availability": availability,
+                    "type": "GET_APP_AVAILABILITY", "responseType": "GET_APP_AVAILABILITY" }),
             )
             .await?;
         }
@@ -177,9 +215,10 @@ fn available(app_id: &str, shared: &Shared) -> bool {
 }
 
 fn app_ids_from(payload: &Value) -> Vec<String> {
-    if let Some(s) = payload.get("appId").and_then(|v| v.as_str()) {
+    let ids = payload.get("appId").or_else(|| payload.get("appIds"));
+    if let Some(s) = ids.and_then(|v| v.as_str()) {
         vec![s.to_string()]
-    } else if let Some(arr) = payload.get("appIds").and_then(|v| v.as_array()) {
+    } else if let Some(arr) = ids.and_then(|v| v.as_array()) {
         arr.iter()
             .filter_map(|v| v.as_str())
             .map(|s| s.to_string())
@@ -252,6 +291,18 @@ fn namespaces_for(app_id: &str) -> (String, Vec<String>) {
 #[cfg(test)]
 mod embedded_tests {
     use super::*;
+
+    #[test]
+    fn availability_accepts_the_standard_app_id_array_and_legacy_forms() {
+        for value in [
+            json!({"appId":["CC1AD845","233637DE"]}),
+            json!({"appIds":["CC1AD845","233637DE"]}),
+        ] {
+            assert_eq!(app_ids_from(&value), vec!["CC1AD845", "233637DE"]);
+        }
+        assert_eq!(app_ids_from(&json!({"appId":"CC1AD845"})), vec!["CC1AD845"]);
+        assert!(app_ids_from(&json!({"appId":42})).is_empty());
+    }
     #[test]
     fn android_does_not_claim_unimplemented_web_receivers() {
         assert!(supports_app("CC1AD845", true));
