@@ -19,3 +19,5 @@ independently of Cast, does not take focus and hides while locked or screen-off.
 It opens the installed Home Assistant Assist task only on a tap; microphone
 state and conversation feedback belong to Companion, not this receiver.
 The receiver settings and a quiet notification can disable the shortcut.
+The settings content reserves a gutter on the shortcut's chosen edge, so the
+floating target never covers its switches or fields.

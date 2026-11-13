@@ -27,6 +27,7 @@ public final class MainActivity extends AppCompatActivity {
     private MaterialSwitch automaticVideo;
     private MaterialSwitch assistShortcut;
     private SharedPreferences assistPreferences;
+    private LinearLayout panel;
     private final ActivityResultLauncher<Intent> assistPermission = registerForActivityResult(
         new ActivityResultContracts.StartActivityForResult(), result -> {
             assistShortcut.setChecked(Settings.canDrawOverlays(this));
@@ -45,6 +46,7 @@ public final class MainActivity extends AppCompatActivity {
             boolean nativeBusy = NativeBridge.running();
             start.setEnabled(!running && !nativeBusy); stop.setEnabled(running); name.setEnabled(!running && !nativeBusy);
             assistShortcut.setChecked(assistPreferences.getBoolean(AssistOverlayPolicy.ENABLED, false));
+            positionAssistControls();
             handler.postDelayed(this, 500);
         }
     };
@@ -56,7 +58,7 @@ public final class MainActivity extends AppCompatActivity {
         MaterialToolbar toolbar = new MaterialToolbar(this); toolbar.setTitle("OpenChromecast");
         root.addView(toolbar, new LinearLayout.LayoutParams(-1, dp(64)));
         ScrollView scroll = new ScrollView(this);
-        LinearLayout panel = new LinearLayout(this); panel.setOrientation(LinearLayout.VERTICAL);
+        panel = new LinearLayout(this); panel.setOrientation(LinearLayout.VERTICAL);
         panel.setPadding(dp(24), dp(16), dp(24), dp(24));
         state = new TextView(this); state.setTextAppearance(com.google.android.material.R.style.TextAppearance_Material3_TitleLarge);
         panel.addView(state, spaced());
@@ -150,6 +152,7 @@ public final class MainActivity extends AppCompatActivity {
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private void applyAssistShortcut(boolean enabled) {
         assistPreferences.edit().putBoolean(AssistOverlayPolicy.ENABLED, enabled).apply();
+        positionAssistControls();
         if (!enabled) { stopService(new Intent(this, AssistOverlayService.class)); return; }
         try { startForegroundService(new Intent(this, AssistOverlayService.class)); }
         catch (IllegalStateException | SecurityException error) {
@@ -158,12 +161,21 @@ public final class MainActivity extends AppCompatActivity {
             Snackbar.make(assistShortcut, R.string.assist_shortcut_start_failed, Snackbar.LENGTH_LONG).show();
         }
     }
+    private void positionAssistControls() {
+        boolean enabled = assistPreferences.getBoolean(AssistOverlayPolicy.ENABLED, false);
+        boolean right = assistPreferences.getBoolean(AssistOverlayPolicy.RIGHT_EDGE, true);
+        int leftPadding = dp(enabled && !right ? 104 : 24);
+        int rightPadding = dp(enabled && right ? 104 : 24);
+        if (panel.getPaddingLeft() != leftPadding || panel.getPaddingRight() != rightPadding)
+            panel.setPadding(leftPadding, dp(16), rightPadding, dp(24));
+    }
     @Override protected void onResume() {
         super.onResume(); visible = true;
         automaticVideo.setChecked(settings.getBoolean(VideoPresentationPolicy.AUTOMATIC_VIDEO, false)
             && Settings.canDrawOverlays(this));
         boolean shortcut = assistPreferences.getBoolean(AssistOverlayPolicy.ENABLED, false) && Settings.canDrawOverlays(this);
         assistShortcut.setChecked(shortcut);
+        positionAssistControls();
         if (shortcut && !AssistOverlayService.running) applyAssistShortcut(true);
         handler.post(refresh);
     }
