@@ -4,6 +4,11 @@ Local Android host for openchromecast's existing Rust Cast V2 implementation.
 Media3 ExoPlayer owns audio/video playback; Android NSD owns `_googlecast._tcp`
 discovery. This is a prototype, not a Google-certified Chromecast.
 
+For another Echo, use the [two-path deployment guide](REINSTALL.md): guarded
+fresh application installation on LineageOS, or a separately approved stock
+Amazon conversion. No credentials, ROM flashing or private device data are
+included in the public installer or GitHub Android test artifacts.
+
 ## Scope and limits
 
 - Default Media Receiver (`CC1AD845`), HTTP/HTTPS media, play/pause/seek/stop,
@@ -33,8 +38,9 @@ discovery. This is a prototype, not a Google-certified Chromecast.
   private legacy bundle can supply cached TLS-only signatures, with local window
   rotation; see [the opt-in and its trust limits](LEGACY_BUNDLE.md). Google SDK applications may
   still reject it even when discovery and Home Assistant control work. No official
-  YouTube phone acceptance, Netflix/DRM, screen mirroring, multiroom or universal
-  sender support claim.
+  universal phone acceptance, Netflix/DRM, screen mirroring or multiroom claim.
+  One privately provisioned crown has owner-confirmed official YouTube playback
+  and shared phone volume on 0.1.14; see [the exact deployment scope](REINSTALL.md).
 - Optional automatic boot resume, disabled by default. It resumes only after
   the switch is enabled and the receiver has been explicitly started; stopping
   from the screen or notification prevents the next resume. The boot receiver

@@ -1,0 +1,65 @@
+name: Android prototype
+
+on:
+  push:
+    branches: [feat/android-receiver, 'codex/**']
+    paths: ['android/**', 'src/**', 'assets/icon.ico', '.github/workflows/android.yml']
+  pull_request:
+    paths: ['android/**', 'src/**', 'assets/icon.ico', '.github/workflows/android.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@0b6dd653ba04f4f93bf581ec31e66cbd7dcb644d # v4
+        with:
+          gradle-version: '9.2.1'
+      - name: Prepare Rust and Android targets
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --component clippy
+          rustup override set 1.92.0
+          rustup target add armv7-linux-androideabi aarch64-linux-android
+          sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018'
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - name: Deployment guards and command help
+        run: |
+          python3 -m unittest discover -s android/tests -v
+          python3 android/deploy.py --help
+          bash android/build.sh --help
+          bash android/install.sh --help
+      - name: Native tests and lint
+        run: |
+          cargo test --manifest-path android/native/Cargo.toml --locked --lib -- --test-threads=2
+          cargo clippy --manifest-path android/native/Cargo.toml --locked --all-targets
+      - name: Build both ABIs, Java tests and Android lint
+        run: bash android/build.sh --abi all
+      - name: Fingerprint test APK
+        working-directory: android/app/build/outputs/apk/debug
+        run: |
+          sha256sum app-debug.apk > SHA256SUMS
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs app-debug.apk > SIGNER.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: openchromecast-android-test-${{ github.sha }}
+          path: |
+            android/app/build/outputs/apk/debug/app-debug.apk
+            android/app/build/outputs/apk/debug/SHA256SUMS
+            android/app/build/outputs/apk/debug/SIGNER.txt
+          if-no-files-found: error
+          retention-days: 14
