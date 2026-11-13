@@ -3,6 +3,10 @@ package org.openchromecast.receiver;
 final class SystemVolumePolicy {
     static final String MIGRATED = "system_volume_v1";
 
+    static boolean ready(int minimum, int maximum) {
+        return minimum >= 0 && maximum > minimum;
+    }
+
     static int castIndex(float level, int minimum, int maximum) {
         if (!Float.isFinite(level)) throw new IllegalArgumentException("Invalid volume");
         return Math.round(minimum + Math.max(0f, Math.min(1f, level)) * range(minimum, maximum));

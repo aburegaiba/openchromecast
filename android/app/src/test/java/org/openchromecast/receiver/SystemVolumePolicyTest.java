@@ -4,6 +4,13 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class SystemVolumePolicyTest {
+    @Test public void waitsForAsynchronousDeviceInitialization() {
+        assertFalse(SystemVolumePolicy.ready(0, 0));
+        assertTrue(SystemVolumePolicy.ready(0, 15));
+        assertFalse(SystemVolumePolicy.ready(5, 2));
+        assertFalse(SystemVolumePolicy.ready(-1, 15));
+    }
+
     @Test public void castRequestsUseActualDeviceSteps() {
         assertEquals(0, SystemVolumePolicy.castIndex(0f, 0, 15));
         assertEquals(5, SystemVolumePolicy.castIndex(0.35f, 0, 15));

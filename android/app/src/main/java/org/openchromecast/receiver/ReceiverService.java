@@ -4,6 +4,7 @@ import android.app.*;
 import android.content.*;
 import android.content.pm.ServiceInfo;
 import android.media.session.MediaSession;
+import android.media.AudioManager;
 import android.media.session.PlaybackState;
 import android.net.*;
 import android.net.nsd.*;
@@ -34,6 +35,8 @@ public final class ReceiverService extends Service {
     private ConnectivityManager.NetworkCallback networkCallback;
     private final NetworkSelection networkSelection = new NetworkSelection();
     private MediaSession mediaSession;
+    private AudioManager audioManager;
+    private boolean volumeInitialized;
     private String deviceId, receiverName;
 
     @androidx.annotation.OptIn(markerClass = androidx.media3.common.util.UnstableApi.class)
@@ -57,29 +60,8 @@ public final class ReceiverService extends Service {
             .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true);
         player.setHandleAudioBecomingNoisy(true);
         player.setWakeMode(C.WAKE_MODE_NETWORK);
-        try {
-            if (!player.isCommandAvailable(Player.COMMAND_SET_DEVICE_VOLUME_WITH_FLAGS)
-                    || !player.isCommandAvailable(Player.COMMAND_ADJUST_DEVICE_VOLUME_WITH_FLAGS)) {
-                fail("Volume multimedia systeme indisponible"); return;
-            }
-            int minimum = player.getDeviceInfo().minVolume, maximum = player.getDeviceInfo().maxVolume;
-            SystemVolumePolicy.step(minimum, maximum);
-            if (!settings.getBoolean(SystemVolumePolicy.MIGRATED, false)) {
-                if (settings.contains("volume")) {
-                    // Lower the device first, before removing the old player attenuation.
-                    player.setDeviceVolume(SystemVolumePolicy.migrationIndex(player.getDeviceVolume(),
-                        settings.getFloat("volume", 0.15f), minimum, maximum), 0);
-                    if (settings.getBoolean("muted", false)) player.setDeviceMuted(true, 0);
-                }
-                if (!settings.edit().putBoolean(SystemVolumePolicy.MIGRATED, true).commit()) {
-                    fail("Migration du volume non sauvegardee"); return;
-                }
-            }
-            player.setVolume(1f);
-            readSystemVolume();
-        } catch (IllegalArgumentException | IllegalStateException | SecurityException error) {
-            fail("Volume multimedia systeme indisponible"); return;
-        }
+        player.setVolume(0f);
+        audioManager = getSystemService(AudioManager.class);
         player.addListener(new Player.Listener() {
             @Override public void onPlayerError(PlaybackException error) {
                 playbackError = true;
@@ -94,6 +76,7 @@ public final class ReceiverService extends Service {
             }
             @Override public void onIsPlayingChanged(boolean playing) { publish(); }
             @Override public void onDeviceVolumeChanged(int index, boolean isMuted) { publish(); }
+            @Override public void onDeviceInfoChanged(DeviceInfo info) { startWhenVolumeReady(); }
             @Override public void onTracksChanged(Tracks tracks) {
                 // HLS/DASH content types need not start with video/.
                 if (tracks.isTypeSelected(C.TRACK_TYPE_VIDEO) && !video) {
@@ -151,6 +134,46 @@ public final class ReceiverService extends Service {
             }
         };
         connectivity.registerDefaultNetworkCallback(networkCallback);
+        handler.post(this::startWhenVolumeReady);
+        handler.postDelayed(() -> {
+            if (!destroying && !volumeInitialized) fail("Volume multimedia systeme indisponible");
+        }, 5000);
+    }
+
+    private void startWhenVolumeReady() {
+        if (destroying || volumeInitialized) return;
+        int minimum = player.getDeviceInfo().minVolume, maximum = player.getDeviceInfo().maxVolume;
+        // Media3 initially exposes a 0..0 placeholder while AudioManager loads asynchronously.
+        if (!SystemVolumePolicy.ready(minimum, maximum)) return;
+        SharedPreferences settings = getSharedPreferences("receiver", MODE_PRIVATE);
+        try {
+            if (audioManager == null || !player.isCommandAvailable(Player.COMMAND_SET_DEVICE_VOLUME_WITH_FLAGS)
+                    || !player.isCommandAvailable(Player.COMMAND_ADJUST_DEVICE_VOLUME_WITH_FLAGS)) {
+                fail("Volume multimedia systeme indisponible"); return;
+            }
+            if (!settings.getBoolean(SystemVolumePolicy.MIGRATED, false)) {
+                if (settings.contains("volume")) {
+                    // Confirm the real device level is lowered before removing player attenuation.
+                    int target = SystemVolumePolicy.migrationIndex(
+                        audioManager.getStreamVolume(AudioManager.STREAM_MUSIC),
+                        settings.getFloat("volume", 0.15f), minimum, maximum);
+                    audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0);
+                    if (audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) != target) {
+                        fail("Migration du volume refusee"); return;
+                    }
+                    if (settings.getBoolean("muted", false))
+                        audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, 0);
+                }
+                if (!settings.edit().putBoolean(SystemVolumePolicy.MIGRATED, true).commit()) {
+                    fail("Migration du volume non sauvegardee"); return;
+                }
+            }
+            volumeInitialized = true;
+            player.setVolume(1f);
+            readSystemVolume();
+        } catch (IllegalArgumentException | IllegalStateException | SecurityException error) {
+            fail("Volume multimedia systeme indisponible"); return;
+        }
         try {
             File privateDirectory = getNoBackupFilesDir();
             android.system.Os.chmod(privateDirectory.getAbsolutePath(), 0700);
@@ -274,13 +297,13 @@ public final class ReceiverService extends Service {
     }
 
     private void readSystemVolume() {
-        volume = SystemVolumePolicy.level(player.getDeviceVolume(),
+        volume = SystemVolumePolicy.level(audioManager.getStreamVolume(AudioManager.STREAM_MUSIC),
             player.getDeviceInfo().minVolume, player.getDeviceInfo().maxVolume);
-        muted = player.isDeviceMuted();
+        muted = audioManager.isStreamMute(AudioManager.STREAM_MUSIC);
     }
 
     private void publish() {
-        if (destroying || player == null) return;
+        if (destroying || player == null || !volumeInitialized) return;
         readSystemVolume();
         String state;
         int playback = player.getPlaybackState();
