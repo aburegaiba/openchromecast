@@ -24,5 +24,9 @@ Local network; explicit start/stop and Android notification. No server-side
 media relay, account credentials, root or microphone. Optional boot resume is
 explicitly enabled in receiver settings; it never opens another screen.
 Optional automatic video presentation uses Android's special display
-permission, granted through system settings. It does not draw overlay windows.
+permission, granted through system settings. Video presentation itself does
+not draw overlay windows. A separate opt-in floating Assist shortcut can use
+that permission, independently of Cast playback. It launches Companion's
+preferred Assist pipeline on an explicit tap, without microphone permission
+or capture in this application. It hides on locked/screen-off devices.
 The player task closes on STOP/end/error, revealing the previous application.

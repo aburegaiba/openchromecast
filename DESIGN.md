@@ -11,3 +11,11 @@ The video player is full-size in its own task and leaves the previous
 application intact. Automatic presentation requires explicit opt-in and the
 native Android permission screen; no overlay window is drawn. STOP, end and
 player error close that video task instead of launching another application.
+
+The optional Assist shortcut is a separate, user-enabled floating action
+button: native microphone icon, 56dp target, theme primary/on-primary colors,
+draggable with edge snapping and a saved relative height. It remains available
+independently of Cast, does not take focus and hides while locked or screen-off.
+It opens the installed Home Assistant Assist task only on a tap; microphone
+state and conversation feedback belong to Companion, not this receiver.
+The receiver settings and a quiet notification can disable the shortcut.

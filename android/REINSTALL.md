@@ -97,6 +97,17 @@ Android's own package-manager broadcasts. Configure the device locally next.
    separately approved reboot: some builds reopen legacy ADB. Do not assume
    application autostart also secures the operating system's debugging policy.
 
+Optional on-demand voice button (0.1.15+): enable **Bouton micro flottant** in
+OpenChromecast settings, separately from automatic video. It uses the native
+overlay permission and launches Companion, not a microphone in this app. Move
+it by dragging to an edge. Verify that it remains above the dashboard and a
+video, survives Cast stop/start, and does not launch Assist while dragged.
+Agree with the owner before an actual microphone test. Then tap and check the
+preferred Assist pipeline, transcription, spoken reply and return to the prior
+screen. A missing or unregistered Companion must not be treated as a successful
+voice test. The switch or notification Hide action disables the button; neither
+clears credentials nor stops Cast. This does not enable wake-word listening.
+
 ## Acceptance and recovery
 
 Record the APK/source/signer, device profile, unique name, firmware, results and

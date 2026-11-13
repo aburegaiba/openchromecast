@@ -3,4 +3,10 @@
     <string name="automatic_start">Demarrage automatique</string>
     <string name="automatic_video">Affichage video automatique</string>
     <string name="video_permission_unavailable">Autorisation d\'affichage indisponible</string>
+    <string name="assist_shortcut">Bouton micro flottant</string>
+    <string name="assist_shortcut_idle">Raccourci Assist disponible</string>
+    <string name="hide_assist_shortcut">Masquer</string>
+    <string name="open_assist">Parler a Home Assistant</string>
+    <string name="assist_unavailable">Assist indisponible. Verifier Home Assistant.</string>
+    <string name="assist_shortcut_start_failed">Bouton micro indisponible. Verifier les autorisations.</string>
 </resources>

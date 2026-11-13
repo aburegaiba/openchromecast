@@ -7,8 +7,8 @@ android {
         applicationId 'org.openchromecast.receiver'
         minSdk 26
         targetSdk 36
-        versionCode 15
-        versionName '0.1.14-prototype'
+        versionCode 16
+        versionName '0.1.15-prototype'
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17

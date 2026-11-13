@@ -11,6 +11,17 @@ included in the public installer or GitHub Android test artifacts.
 
 ## Scope and limits
 
+- Optional floating microphone shortcut to the installed Home Assistant
+  Companion Assist, including the Minimal variant. Disabled by default; enable
+  it in receiver settings after granting the native display-over-other-apps
+  permission. Drag it to either edge; its relative height is saved. The private
+  foreground service is independent of Cast and resumes after boot/package
+  replacement only while opted in. It hides on screen-off/lock. A tap opens
+  Companion's preferred pipeline with one-shot listening; this app never
+  requests microphone or accessibility permission, changes volume or captures
+  audio. Disable the switch or use its quiet notification's Hide action to
+  remove it. System/protected windows can hide overlays. Actual Companion
+  enrollment, microphone and response playback must be tested per device.
 - Default Media Receiver (`CC1AD845`), HTTP/HTTPS media, play/pause/seek/stop,
   shared Android media volume/mute, and status from the real player.
 - Native YouTube app (`233637DE`) through the pinned MIT Vibecast provider:

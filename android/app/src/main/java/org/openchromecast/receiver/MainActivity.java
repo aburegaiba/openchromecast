@@ -25,6 +25,12 @@ public final class MainActivity extends AppCompatActivity {
     private TextInputEditText name;
     private SharedPreferences settings;
     private MaterialSwitch automaticVideo;
+    private MaterialSwitch assistShortcut;
+    private SharedPreferences assistPreferences;
+    private final ActivityResultLauncher<Intent> assistPermission = registerForActivityResult(
+        new ActivityResultContracts.StartActivityForResult(), result -> {
+            assistShortcut.setChecked(Settings.canDrawOverlays(this));
+        });
     private final ActivityResultLauncher<Intent> videoPermission = registerForActivityResult(
         new ActivityResultContracts.StartActivityForResult(), result -> {
             boolean allowed = Settings.canDrawOverlays(this);
@@ -38,6 +44,7 @@ public final class MainActivity extends AppCompatActivity {
             boolean running = ReceiverService.current != null;
             boolean nativeBusy = NativeBridge.running();
             start.setEnabled(!running && !nativeBusy); stop.setEnabled(running); name.setEnabled(!running && !nativeBusy);
+            assistShortcut.setChecked(assistPreferences.getBoolean(AssistOverlayPolicy.ENABLED, false));
             handler.postDelayed(this, 500);
         }
     };
@@ -83,6 +90,23 @@ public final class MainActivity extends AppCompatActivity {
             } else settings.edit().putBoolean(VideoPresentationPolicy.AUTOMATIC_VIDEO, checked).apply();
         });
         panel.addView(automaticVideo, spaced());
+        assistPreferences = getSharedPreferences(AssistOverlayPolicy.PREFERENCES, MODE_PRIVATE);
+        assistShortcut = new MaterialSwitch(this);
+        assistShortcut.setText(R.string.assist_shortcut);
+        assistShortcut.setMinHeight(dp(48));
+        assistShortcut.setChecked(assistPreferences.getBoolean(AssistOverlayPolicy.ENABLED, false));
+        assistShortcut.setOnCheckedChangeListener((view, checked) -> {
+            if (checked && !Settings.canDrawOverlays(this)) {
+                assistShortcut.setChecked(false);
+                try {
+                    assistPermission.launch(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:" + getPackageName())));
+                } catch (android.content.ActivityNotFoundException | SecurityException error) {
+                    Snackbar.make(assistShortcut, R.string.video_permission_unavailable, Snackbar.LENGTH_LONG).show();
+                }
+            } else applyAssistShortcut(checked);
+        });
+        panel.addView(assistShortcut, spaced());
         start = button("Demarrer", android.R.drawable.ic_media_play);
         start.setOnClickListener(view -> {
             String value = name.getText() == null ? "" : name.getText().toString().trim();
@@ -124,10 +148,23 @@ public final class MainActivity extends AppCompatActivity {
         params.bottomMargin = dp(12); return params;
     }
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
+    private void applyAssistShortcut(boolean enabled) {
+        assistPreferences.edit().putBoolean(AssistOverlayPolicy.ENABLED, enabled).apply();
+        if (!enabled) { stopService(new Intent(this, AssistOverlayService.class)); return; }
+        try { startForegroundService(new Intent(this, AssistOverlayService.class)); }
+        catch (IllegalStateException | SecurityException error) {
+            assistPreferences.edit().putBoolean(AssistOverlayPolicy.ENABLED, false).apply();
+            assistShortcut.setChecked(false);
+            Snackbar.make(assistShortcut, R.string.assist_shortcut_start_failed, Snackbar.LENGTH_LONG).show();
+        }
+    }
     @Override protected void onResume() {
         super.onResume(); visible = true;
         automaticVideo.setChecked(settings.getBoolean(VideoPresentationPolicy.AUTOMATIC_VIDEO, false)
             && Settings.canDrawOverlays(this));
+        boolean shortcut = assistPreferences.getBoolean(AssistOverlayPolicy.ENABLED, false) && Settings.canDrawOverlays(this);
+        assistShortcut.setChecked(shortcut);
+        if (shortcut && !AssistOverlayService.running) applyAssistShortcut(true);
         handler.post(refresh);
     }
     @Override protected void onPause() { visible = false; handler.removeCallbacks(refresh); super.onPause(); }
