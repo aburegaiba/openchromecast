@@ -36,6 +36,7 @@ public final class ReceiverService extends Service {
     private MediaSession mediaSession;
     private String deviceId, receiverName;
 
+    @androidx.annotation.OptIn(markerClass = androidx.media3.common.util.UnstableApi.class)
     @Override public void onCreate() {
         super.onCreate();
         current = this;
@@ -44,8 +45,6 @@ public final class ReceiverService extends Service {
         manager.createNotificationChannel(new NotificationChannel(CHANNEL, "Reception Cast", NotificationManager.IMPORTANCE_LOW));
         foreground(false);
         SharedPreferences settings = getSharedPreferences("receiver", MODE_PRIVATE);
-        volume = MediaPolicy.restoredVolume(settings.getFloat("volume", 0.15f));
-        muted = settings.getBoolean("muted", false);
         deviceId = settings.getString("device_id", null);
         if (deviceId == null) {
             deviceId = UUID.randomUUID().toString().replace("-", "");
@@ -53,12 +52,34 @@ public final class ReceiverService extends Service {
         }
         receiverName = settings.getString("name", "OpenChromecast Android");
         if (!MediaPolicy.acceptsName(receiverName)) { fail("Nom de recepteur invalide"); return; }
-        player = new ExoPlayer.Builder(this).build();
+        player = new ExoPlayer.Builder(this).setDeviceVolumeControlEnabled(true).build();
         player.setAudioAttributes(new AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
             .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true);
         player.setHandleAudioBecomingNoisy(true);
         player.setWakeMode(C.WAKE_MODE_NETWORK);
-        player.setVolume(muted ? 0f : volume);
+        try {
+            if (!player.isCommandAvailable(Player.COMMAND_SET_DEVICE_VOLUME_WITH_FLAGS)
+                    || !player.isCommandAvailable(Player.COMMAND_ADJUST_DEVICE_VOLUME_WITH_FLAGS)) {
+                fail("Volume multimedia systeme indisponible"); return;
+            }
+            int minimum = player.getDeviceInfo().minVolume, maximum = player.getDeviceInfo().maxVolume;
+            SystemVolumePolicy.step(minimum, maximum);
+            if (!settings.getBoolean(SystemVolumePolicy.MIGRATED, false)) {
+                if (settings.contains("volume")) {
+                    // Lower the device first, before removing the old player attenuation.
+                    player.setDeviceVolume(SystemVolumePolicy.migrationIndex(player.getDeviceVolume(),
+                        settings.getFloat("volume", 0.15f), minimum, maximum), 0);
+                    if (settings.getBoolean("muted", false)) player.setDeviceMuted(true, 0);
+                }
+                if (!settings.edit().putBoolean(SystemVolumePolicy.MIGRATED, true).commit()) {
+                    fail("Migration du volume non sauvegardee"); return;
+                }
+            }
+            player.setVolume(1f);
+            readSystemVolume();
+        } catch (IllegalArgumentException | IllegalStateException | SecurityException error) {
+            fail("Volume multimedia systeme indisponible"); return;
+        }
         player.addListener(new Player.Listener() {
             @Override public void onPlayerError(PlaybackException error) {
                 playbackError = true;
@@ -72,6 +93,7 @@ public final class ReceiverService extends Service {
                 if (state == Player.STATE_ENDED) VideoActivity.closeIfOpen();
             }
             @Override public void onIsPlayingChanged(boolean playing) { publish(); }
+            @Override public void onDeviceVolumeChanged(int index, boolean isMuted) { publish(); }
             @Override public void onTracksChanged(Tracks tracks) {
                 // HLS/DASH content types need not start with video/.
                 if (tracks.isTypeSelected(C.TRACK_TYPE_VIDEO) && !video) {
@@ -81,6 +103,9 @@ public final class ReceiverService extends Service {
             }
         });
         mediaSession = new MediaSession(this, "OpenChromecast");
+        mediaSession.setPlaybackToLocal(new android.media.AudioAttributes.Builder()
+            .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+            .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MOVIE).build());
         mediaSession.setCallback(new MediaSession.Callback() {
             @Override public void onPlay() { player.play(); }
             @Override public void onPause() { player.pause(); }
@@ -214,8 +239,12 @@ public final class ReceiverService extends Service {
             case "playback_error":
                 stopMedia(); playbackError = true;
                 summary = "Source multimedia non prise en charge"; notifyState(); publish(); break;
-            case "volume": volume = (float)Math.max(0, Math.min(1, event.optDouble("volume", volume))); applyVolume(); break;
-            case "mute": muted = event.optBoolean("muted", false); applyVolume(); break;
+            case "volume":
+                float requested = (float)event.optDouble("volume", volume);
+                if (Float.isFinite(requested)) player.setDeviceVolume(SystemVolumePolicy.castIndex(
+                    requested, player.getDeviceInfo().minVolume, player.getDeviceInfo().maxVolume), 0);
+                publish(); break;
+            case "mute": player.setDeviceMuted(event.optBoolean("muted", false), 0); publish(); break;
             default: break;
         }
     }
@@ -244,14 +273,15 @@ public final class ReceiverService extends Service {
         }
     }
 
-    private void applyVolume() {
-        getSharedPreferences("receiver", MODE_PRIVATE).edit()
-            .putFloat("volume", volume).putBoolean("muted", muted).apply();
-        player.setVolume(muted ? 0f : volume); publish();
+    private void readSystemVolume() {
+        volume = SystemVolumePolicy.level(player.getDeviceVolume(),
+            player.getDeviceInfo().minVolume, player.getDeviceInfo().maxVolume);
+        muted = player.isDeviceMuted();
     }
 
     private void publish() {
         if (destroying || player == null) return;
+        readSystemVolume();
         String state;
         int playback = player.getPlaybackState();
         if (playbackError || playback == Player.STATE_ENDED) state = "ENDED";
@@ -260,7 +290,8 @@ public final class ReceiverService extends Service {
         else state = "IDLE";
         long duration = player.getDuration();
         NativeBridge.status(generation, state, player.getCurrentPosition() / 1000f,
-            duration == C.TIME_UNSET ? 0 : duration / 1000f, volume, muted, playbackError);
+            duration == C.TIME_UNSET ? 0 : duration / 1000f, volume, muted,
+            SystemVolumePolicy.step(player.getDeviceInfo().minVolume, player.getDeviceInfo().maxVolume), playbackError);
         if (mediaSession != null) {
             int androidState = player.isPlaying() ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED;
             mediaSession.setPlaybackState(new PlaybackState.Builder()

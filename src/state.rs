@@ -56,6 +56,7 @@ pub struct AppState {
     pub last_load: Option<(String, Instant)>,
     pub volume: f32,
     pub muted: bool,
+    pub volume_step: f32,
     pub media_session_counter: u32,
 }
 
@@ -68,6 +69,7 @@ impl Default for AppState {
             last_load: None,
             volume: 1.0,
             muted: false,
+            volume_step: 0.05,
             media_session_counter: 0,
         }
     }

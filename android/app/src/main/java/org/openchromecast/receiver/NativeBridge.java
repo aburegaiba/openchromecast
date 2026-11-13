@@ -9,6 +9,6 @@ final class NativeBridge {
     static native boolean running();
     static native void stop();
     static native void status(long generation, String state, float position,
-        float duration, float volume, boolean muted, boolean error);
+        float duration, float volume, boolean muted, float volumeStep, boolean error);
     private NativeBridge() {}
 }

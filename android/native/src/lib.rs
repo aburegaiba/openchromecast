@@ -41,6 +41,7 @@ use tokio::sync::Notify;
 
 struct Session {
     bridge: Arc<Bridge>,
+    app_state: Arc<tokio::sync::Mutex<state::AppState>>,
     shutdown: Arc<Notify>,
     finished: Arc<AtomicBool>,
     network: network::LanPolicy,
@@ -118,6 +119,11 @@ fn start(
         "receiver already started or stopping"
     );
     let bridge = Arc::new(Bridge::default());
+    let app_state = Arc::new(tokio::sync::Mutex::new(state::AppState {
+        volume: initial_volume,
+        ..Default::default()
+    }));
+    let worker_state = app_state.clone();
     let shutdown = Arc::new(Notify::new());
     let worker_bridge = bridge.clone();
     let worker_shutdown = shutdown.clone();
@@ -141,10 +147,7 @@ fn start(
                     let identity = tokio::task::spawn_blocking(move || {
                         identity_config::load(&identity_root)
                     }).await??;
-                    let state = Arc::new(tokio::sync::Mutex::new(state::AppState {
-                            volume: initial_volume,
-                            ..Default::default()
-                        }));
+                    let state = worker_state;
                     let player = worker_bridge.spawn();
                     let mut context = vibecast_sdk::ReceiverContext::new(
                         &info.name, "OpenChromecast Android", info.id.to_string(), private_dir.join("youtube"));
@@ -182,6 +185,7 @@ fn start(
         })?;
     *guard = Some(Session {
         bridge,
+        app_state,
         shutdown,
         finished,
         network,
@@ -265,6 +269,7 @@ pub extern "system" fn Java_org_openchromecast_receiver_NativeBridge_status(
     duration: jfloat,
     volume: jfloat,
     muted: jboolean,
+    volume_step: jfloat,
     error: jboolean,
 ) {
     let Ok(text) = env.get_string(&state) else {
@@ -277,10 +282,11 @@ pub extern "system" fn Java_org_openchromecast_receiver_NativeBridge_status(
         "ENDED" => PlayerState::Ended,
         _ => PlayerState::Idle,
     };
-    if ![position, duration, volume].iter().all(|v| v.is_finite()) {
+    if ![position, duration, volume, volume_step].iter().all(|v| v.is_finite()) {
         return;
     }
     if let Some(s) = session().lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        record_device_volume(&s.app_state, volume, muted != 0, volume_step);
         s.bridge.update(
             generation as u64,
             PlayerSnapshot {
@@ -292,5 +298,39 @@ pub extern "system" fn Java_org_openchromecast_receiver_NativeBridge_status(
                 end_error: error != 0,
             },
         );
+    }
+}
+
+fn record_device_volume(
+    state: &tokio::sync::Mutex<state::AppState>,
+    volume: f32,
+    muted: bool,
+    step: f32,
+) -> bool {
+    let Ok(mut state) = state.try_lock() else {
+        return false;
+    };
+    state.volume = volume.clamp(0.0, 1.0);
+    state.muted = muted;
+    state.volume_step = step.clamp(f32::EPSILON, 1.0);
+    true
+}
+
+#[cfg(test)]
+mod device_volume_tests {
+    use super::*;
+
+    #[test]
+    fn local_volume_readback_updates_receiver_without_blocking_the_android_thread() {
+        let state = tokio::sync::Mutex::new(state::AppState::default());
+        assert!(record_device_volume(&state, 4.0 / 15.0, true, 1.0 / 15.0));
+        let guard = state.try_lock().unwrap();
+        let status = receiver::receiver_status(&guard);
+        assert!((status["volume"]["level"].as_f64().unwrap() - 4.0 / 15.0).abs() < 0.0001);
+        assert_eq!(status["volume"]["muted"], true);
+        assert!((status["volume"]["stepInterval"].as_f64().unwrap() - 1.0 / 15.0).abs() < 0.0001);
+        assert!(!record_device_volume(&state, 0.9, false, 0.1));
+        drop(guard);
+        assert!(record_device_volume(&state, 0.2, false, 1.0 / 15.0));
     }
 }

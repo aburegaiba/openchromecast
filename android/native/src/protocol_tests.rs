@@ -641,6 +641,35 @@ async fn canonical_app_availability_is_correlated_and_does_not_launch() {
 }
 
 #[tokio::test]
+async fn volume_commands_do_not_reapply_an_unspecified_level_or_mute() {
+    for (volume, expected) in [
+        (json!({"level":0.3}), "volume"),
+        (json!({"muted":true}), "mute"),
+    ] {
+        let (mut stream, bridge, task) = client().await;
+        let response = request(
+            &mut stream,
+            server::NS_RECEIVER,
+            "receiver-0",
+            json!({"type":"SET_VOLUME","requestId":74,"volume":volume}),
+        ).await;
+        assert_eq!(response["type"], "RECEIVER_STATUS");
+        let mut events = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let events = bridge.poll();
+                if !events.is_empty() { break events; }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        events.extend(bridge.poll());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["type"], expected);
+        task.abort();
+    }
+}
+
+#[tokio::test]
 async fn discovery_namespace_returns_truthful_compact_identity_and_video_audio_capabilities() {
     let (mut stream, bridge, task) = client().await;
     let result = request(

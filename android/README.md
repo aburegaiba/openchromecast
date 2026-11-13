@@ -7,7 +7,7 @@ discovery. This is a prototype, not a Google-certified Chromecast.
 ## Scope and limits
 
 - Default Media Receiver (`CC1AD845`), HTTP/HTTPS media, play/pause/seek/stop,
-  software volume/mute, and status from the real player.
+  shared Android media volume/mute, and status from the real player.
 - Native YouTube app (`233637DE`) through the pinned MIT Vibecast provider:
   MDX/Lounge and public video resolution, rendered by Media3. See
   [the integration and its boundaries](YOUTUBE.md). No separate server is needed.
@@ -38,9 +38,14 @@ discovery. This is a prototype, not a Google-certified Chromecast.
 - Optional automatic boot resume, disabled by default. It resumes only after
   the switch is enabled and the receiver has been explicitly started; stopping
   from the screen or notification prevents the next resume. The boot receiver
-  never opens an activity or takes over Home Assistant. No system-volume change. Initial
-  software volume defaults to 15 percent of the existing device media volume;
-  later sender volume/mute choices are persisted without changing system volume.
+  never opens an activity or takes over Home Assistant.
+- Since 0.1.13, Cast controls Android's media device volume, shared with local
+  buttons and other media applications, including HA announcements using that
+  stream. Media3 stream gain stays at unity. Device readback, mute and the
+  actual device step are sent back to Cast. A one-time migration lowers the
+  device index before removing any existing software attenuation. Later starts
+  read the current device level, never restore a saved Cast level. Alarm and
+  notification streams are not changed.
 - Targeted at Android 11 Echo hardware first. Other Android versions, real
   multi-day certificate rotation and broader physical A/V remain unqualified
   until tested; installation alone is not acceptance.

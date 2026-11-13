@@ -177,11 +177,14 @@ pub async fn handle(
             if let Some(m) = vol.and_then(|v| v.get("muted")).and_then(|v| v.as_bool()) {
                 st.muted = m;
             }
-            let (level, muted) = (st.volume, st.muted);
             drop(st);
 
-            let _ = shared.player.set_volume(level).await;
-            let _ = shared.player.set_mute(muted).await;
+            if let Some(level) = vol.and_then(|v| v.get("level")).and_then(|v| v.as_f64()) {
+                let _ = shared.player.set_volume(level as f32).await;
+            }
+            if let Some(muted) = vol.and_then(|v| v.get("muted")).and_then(|v| v.as_bool()) {
+                let _ = shared.player.set_mute(muted).await;
+            }
 
             let st = shared.state.lock().await;
             let status = receiver_status(&st);
@@ -251,7 +254,7 @@ pub(crate) fn receiver_status(state: &AppState) -> Value {
             "controlType": "attenuation",
             "level": state.volume,
             "muted": state.muted,
-            "stepInterval": 0.05
+            "stepInterval": state.volume_step
         }
     })
 }
